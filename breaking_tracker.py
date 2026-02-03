@@ -286,7 +286,7 @@ def main():
             
             # 6. 주기 설정 (120초 - 2분마다 체크)
             # 유동적으로 조절 가능
-            time.sleep(5)
+            time.sleep(120)
             
         except KeyboardInterrupt:
             print("Tracker stopped by user.")
