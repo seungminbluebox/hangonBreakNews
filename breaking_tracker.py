@@ -212,7 +212,7 @@ def save_and_notify(news_item):
             return
 
         # 1. DB 저장 (이미지 추출 추가)
-        image_url = None
+        original_url = None
         if url:
             try:
                 config = Config()
@@ -221,7 +221,7 @@ def save_and_notify(news_item):
                 article = Article(url, config=config)
                 article.download()
                 article.parse()
-                image_url = article.top_image
+                original_url = article.top_image
             except Exception as e:
                 print(f"Image fetch error: {e}")
 
@@ -231,7 +231,7 @@ def save_and_notify(news_item):
             "importance_score": score,
             "category": category,
             "original_url": url,
-            "image_url": image_url
+            "original_url": original_url
         }
         supabase.table("breaking_news").insert(data).execute()
         print(f"🚀 New Breaking News Saved: {title}")
