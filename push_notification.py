@@ -60,4 +60,8 @@ if __name__ == "__main__":
     # 테스트용
     now = datetime.now()
     date_str = f"{now.month}월 {now.day}일"
-    send_push_to_all("Hang on!", f"{date_str} 새로운 경제 리포트가 업데이트되었습니다.", "/news/daily-report")
+    send_push_to_all(
+        title="[속보] 시스템 가동 테스트 🚀", 
+        body=f"{date_str} 실시간 뉴스 알림 시스템이 정상적으로 시작되었습니다.", 
+        url="/live"
+    )

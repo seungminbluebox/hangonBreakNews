@@ -5,6 +5,7 @@ import json
 import calendar
 import feedparser
 import requests
+from collections import deque
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -19,7 +20,7 @@ from push_notification import send_push_to_all
 load_dotenv()
 
 # 환경 변수 및 설정
-GEMINI_MODEL_NAME= os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-pro")
+GEMINI_MODEL_NAME= os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -35,10 +36,27 @@ RSS_FEEDS = [
     
     # 2. Yahoo Finance - 속보(Latest) 전용 섹션 RSS
     "https://finance.yahoo.com/news/rss",
+
+    # 4. WSJ Markets
+    "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+
+    # 5. Investing.com Breaking News
+    "https://www.investing.com/rss/news_285.rss"
 ]
 
-# 메모리 상에서 이미 처리한 뉴스 타임스탬프 또는 제목 저장 (중복 방지)
-processed_news = set()
+# 메모리 상에서 이미 처리한 뉴스 제목 저장 (중복 방지 및 메모리 효율화)
+processed_news = deque(maxlen=500)
+
+
+def is_already_saved(title):
+    """DB에 이미 해당 제목의 속보가 있는지 확인합니다."""
+    try:
+        res = supabase.table("breaking_news").select("id").eq("title", title).execute()
+        return len(res.data) > 0
+    except Exception as e:
+        print(f"Error checking duplicate in DB: {e}")
+        return False
+
 
 def get_recent_news_titles():
     """DB에서 최근 20개의 속보 제목을 가져옵니다."""
@@ -56,7 +74,9 @@ def fetch_latest_headlines():
     time_limit_utc = now_utc - timedelta(minutes=30)
     
     # 속보를 나타내는 핵심 키워드 (입구 컷용)
-    BREAKING_KEYWORDS = ["속보", "breaking", "urgent", "just in", "alert", "flash", "급보", "공시", "[특징주]"]
+    BREAKING_KEYWORDS = ["속보", "breaking", "urgent", "just in", "alert", "flash", "급보", "공시", "[특징주]", "exclusive", "scoop"]
+    # 숫자가 포함되거나 핵심 경제 지표인 경우 단어에 상관없이 AI에게 전달할 '관심 키워드'
+    MARKET_INDICATORS = ["cpi", "pce", "fomc", "fed", "nasdaq", "kospi", "earnings", "surprise", "cuts", "hikes", "gdp", "nfp", "nvidia", "samsung"]
     
     custom_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     
@@ -70,8 +90,13 @@ def fetch_latest_headlines():
             for entry in feed.entries:
                 title_lower = entry.title.lower()
                 
-                # [필터 1] 제목에 '속보' 관련 키워드가 포함된 것만 1차 선별
-                if not any(kw in title_lower for kw in BREAKING_KEYWORDS):
+                # [강화된 필터 1] 
+                # 전략: 고품질 소스(Source 3, 4, 5)이거나, 속보 키워드가 있거나, 시장 핵심 지표가 포함된 경우만 선별
+                is_breaking = any(kw in title_lower for kw in BREAKING_KEYWORDS)
+                is_indicator = any(ikw in title_lower for ikw in MARKET_INDICATORS)
+                is_trusted_source = i >= 3 # CNBC, WSJ, Investing.com 등은 무조건 검토
+                
+                if not (is_breaking or is_indicator or is_trusted_source):
                     continue
 
                 pub_datetime_utc = None
@@ -83,10 +108,13 @@ def fetch_latest_headlines():
                 if pub_datetime_utc:
                     if pub_datetime_utc >= time_limit_utc:
                         is_recent = True
+                    else:
+                        print(f"  ❌ Skip (Too Old): {entry.title[:50]}...")
                 else:
                     is_recent = True
                 
                 if is_recent:
+                    print(f"  ✅ Candidate (RSS): {entry.title[:50]}...")
                     headlines.append({
                         "title": entry.title,
                         "link": entry.link,
@@ -117,6 +145,7 @@ def fetch_latest_headlines():
 
                 # [필터 1] 네이버 뉴스도 제목에 '속보' 키워드가 있는 것만 선별
                 if not any(kw in title_lower for kw in BREAKING_KEYWORDS):
+                    # print(f"  ❌ Skip (No Keyword): {title[:50]}...")
                     continue
 
                 link = "https://finance.naver.com" + subject_tag['href']
@@ -127,11 +156,14 @@ def fetch_latest_headlines():
                     pub_time_utc = pub_time_kst.astimezone(timezone.utc)
                     
                     if pub_time_utc >= time_limit_utc:
+                        print(f"  ✅ Candidate (Naver): {title[:50]}...")
                         headlines.append({
                             "title": title,
                             "link": link,
                             "source": "Naver Finance (Strict)"
                         })
+                    else:
+                        print(f"  ❌ Skip (Too Old): {title[:50]}...")
                 except: pass
     except Exception as e:
         print(f"Error fetching Naver breaking news: {e}")
@@ -160,12 +192,13 @@ def filter_breaking_news(headlines, recent_titles):
     [엄격하되 유연한 필터링 기준]
     1. **필터링 대상 (Skip)**: 단순 시황 요약, 일반적인 증시 전망, 소형주 뉴스, 일상적인 홍보성 기사, 이미 알려진 정보의 단순 재탕.
     2. **우선 순위 (Must Include)**:
-       - **핵심 지표**: CPI, PCE, 고용보고서, 금리 결정 등 주요 경제지표 공식 발표 즉시.
+       - **핵심 지표**: CPI, PCE, 고용보고서, 금리 결정 등 주요 경제지표 공식 발표 즉시. 구체적인 수치(이자율, 증감폭, 예상치 대비 발표치)가 포함된 뉴스를 우선적으로 선발하세요.
        - **시장 변동**: 환율 급등락, 국채 금리 폭등, 주요 지수(KOSPI, NASDAQ)의 유의미한 변동 및 추세 전환.
        - **기업 속보**: 삼성전자, SK하이닉스, 애플, 엔비디아 등 대장주들의 '기대치를 크게 벗어난' 실적 발표나 핵심 공시.
        - **정책/긴급**: 정부의 중대 시장 정책 발표, 금융권 긴급 수혈, 또는 실제 발생한 지정학적 충격.
     3. **무게감 판단**: '이 소식을 알게 됨으로써 투자자가 즉각적으로 행동을 고민하게 만드는가?'를 기준으로 삼으세요. 
-    4. **중복 배제**: 이미 보도된 목록과 핵심 키워드가 겹치더라도, '새로운 수치가 발표'되었거나 '상황이 급진전'된 것이라면 포함하세요.
+    4. **팩트 중심**: 미사여구보다는 구체적인 숫자($ , %, bp 등)가 포함된 팩트 위주의 정보를 선호합니다.
+    5. **중복 배제**: 이미 보도된 목록과 핵심 키워드가 겹치더라도, '새로운 수치가 발표'되었거나 '상황이 급진전'된 것이라면 포함하세요.
 
     [출력 형식]
     - 반드시 JSON 리스트 형식으로만 답변하세요. 
@@ -174,6 +207,7 @@ def filter_breaking_news(headlines, recent_titles):
     - title: 한국어로 15자 이내, 제목만 보고도 상황이 파악되게 명확하고 강렬하게. 문장 끝에 문장에 어울리는 이모지 하나 추가.
     - content: 수치나 핵심 팩트를 포함하여 1~2문장으로 압축.
     - category: 'market', 'indicator', 'geopolitics', 'corporate' 중 최적의 카테고리 선택.
+    - original_url: [후보 뉴스 리스트]에서 해당 뉴스의 link를 그대로 가져와서 포함하세요.
     """
 
     try:
@@ -185,10 +219,98 @@ def filter_breaking_news(headlines, recent_titles):
             text = text.split("```")[1].split("```")[0]
         
         candidates = json.loads(text.strip())
+        
+        # 필터링 결과 로그 추가
+        input_titles = [h['title'] for h in headlines]
+        output_titles = [c['title'] for c in candidates] # AI가 새로 지은 제목일 수 있음 (원문 제목과 다를 수 있음)
+        # 원본 링크로 비교하여 탈락한 것들 찾기
+        candidate_urls = [c.get('original_url') for c in candidates]
+        
+        for h in headlines:
+            if h['link'] not in candidate_urls:
+                print(f"  🗑️ AI Rejected: {h['title'][:50]}...")
+            else:
+                print(f"  💎 AI Selected: {h['title'][:50]}...")
+
         return candidates
     except Exception as e:
         print(f"AI filtering error: {e}")
         return []
+
+def perform_deep_analysis(candidates):
+    """
+    선별된 뉴스 후보들의 본문을 직접 읽고, 
+    수치 검증 및 상세 분석을 통해 최종 뉴스 데이터를 생성합니다.
+    """
+    refined_items = []
+    
+    for item in candidates:
+        url = item.get('original_url')
+        if not url:
+            continue
+            
+        try:
+            # 1. 본문 추출
+            config = Config()
+            config.browser_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            config.request_timeout = 10
+            article = Article(url, config=config)
+            article.download()
+            article.parse()
+            
+            full_text = article.text
+            top_image = article.top_image
+            
+            if len(full_text) < 100: # 본문이 너무 적으면 패스하거나 제목 기반 유지
+                print(f"⚠️ Text too short for {item['title']}, using title-based summary.")
+                item['image_url'] = top_image
+                refined_items.append(item)
+                continue
+
+            # 2. 본문 기반 AI 재심사 및 요약
+            prompt = f"""
+            당신은 세계 최고의 경제 전문 팩트체커입니다. 
+            다음 기사의 본문을 읽고, 제목에서 파악되지 않은 '구체적인 수치'와 '핵심 맥락'을 포함하여 내용을 정교하게 다듬어주세요.
+
+            [기사 제목]: {item['title']}
+            [기사 본문]: {full_text[:3000]} 
+
+            [작성 가이드라인]
+            - **수치 강조**: 본문에 포함된 구체적인 퍼센트(%), 금액($), 포인트(p/bp), 예상치 대비 상회/하회 여부를 반드시 포함하세요.
+            - **정확도**: 본문 내용과 제목이 다르거나 낚시성 기사라면 과감히 빈 객체 {{}}를 반환하세요.
+            - **품격**: 블룸버그/로이터 속보 톤앤매너를 유지하세요.
+
+            [출력 형식 (JSON 하나만 출력)]
+            {{
+                "title": "한국어 15자 이내 (이모지 포함)",
+                "content": "본문의 핵심 수치가 포함된 1~2문장 요약",
+                "importance_score": 7~10점 사이 점수,
+                "category": "market/indicator/geopolitics/corporate 중 선택",
+                "original_url": "{url}"
+            }}
+            """
+            
+            response = model.generate_content(prompt)
+            text = response.text
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0]
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0]
+            
+            refined_data = json.loads(text.strip())
+            if refined_data and refined_data.get('title'):
+                refined_data['image_url'] = top_image # 이미지 경로 유지
+                refined_items.append(refined_data)
+                print(f"  ✨ Deep Analysis Success: {refined_data['title']}")
+            else:
+                print(f"  🗑️ Deep Analysis Rejected (AI): {item['title'][:50]}...")
+                
+        except Exception as e:
+            print(f"Deep analysis error for {url}: {e}")
+            # 에러 발생 시 1차 분석 결과라도 유지
+            refined_items.append(item)
+            
+    return refined_items
 
 def save_and_notify(news_item):
     """
@@ -201,44 +323,37 @@ def save_and_notify(news_item):
         score = news_item.get('importance_score', 7)
         category = news_item.get('category', 'market')
         url = news_item.get('original_url', '')
+        top_image_url = news_item.get('image_url')
 
         if not title:
             return
 
-        # 중복 체크
-        res = supabase.table("breaking_news").select("id").eq("title", title).execute()
-        if res.data:
+        # 중복 체크 (DB 최종 확인)
+        if is_already_saved(title):
             print(f"Skipping duplicate: {title}")
             return
 
-        # 1. DB 저장 (이미지 추출 추가)
-        original_url = None
-        if url:
-            try:
-                config = Config()
-                config.browser_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-                config.request_timeout = 5
-                article = Article(url, config=config)
-                article.download()
-                article.parse()
-                original_url = article.top_image
-            except Exception as e:
-                print(f"Image fetch error: {e}")
-
+        # 1. DB 저장
         data = {
             "title": title,
             "content": content,
             "importance_score": score,
             "category": category,
-            "original_url": url,
-            "original_url": original_url
+            "original_url": url
         }
+        
+
         supabase.table("breaking_news").insert(data).execute()
         print(f"🚀 New Breaking News Saved: {title}")
 
-        # 2. 실시간 푸시 알림 (전체 알림)
+        # 중요도에 따른 접두어 및 강조
+        prefix = "[속보]"
+        if score >= 9:
+            prefix = "🚨[초긴급]"
+        
+        # 2. 실시간 푸시 알림 (전체 알림 전송)
         send_push_to_all(
-            title=f"[속보] {title}",
+            title=f"{prefix} {title}",
             body=content,
             url="/live" # 속보 타임라인 전용 페이지로 링크
         )
@@ -256,37 +371,44 @@ def main():
             # 1. 헤드라인 수집
             raw_headlines = fetch_latest_headlines()
             
-            # 2. 중복 필터링 (메모리 기반)
+            # 2. 필터링: 메모리 중복 + DB 중복 동시 체크 (AI 비용 절감)
             new_headlines = []
             for h in raw_headlines:
-                if h['title'] not in processed_news:
-                    new_headlines.append(h)
-                    processed_news.add(h['title'])
+                title = h['title']
+                if title not in processed_news:
+                    if not is_already_saved(title):
+                        new_headlines.append(h)
+                    else:
+                        print(f"  ⏭️ Skip (Already in DB): {title[:50]}...")
+                    processed_news.append(title)  # deque는 자동으로 오래된 요소 제거
+                else:
+                    # print(f"  ⏭️ Skip (Memory): {title[:50]}...")
+                    pass
             
-            # 메모리 관리 (최근 500개만 유지)
-            if len(processed_news) > 500:
-                processed_news.clear()
-
             # 3. DB에서 최근 보도된 뉴스 목록 가져오기 (문맥 파악 및 중복 방지용)
             recent_titles = get_recent_news_titles()
 
-            # 4. AI 필터링 및 요약 (최근 보도 목록 전달)
+            # 4. AI 필터링 및 요약
             if new_headlines:
-                print(f"🔍 Analyzing {len(new_headlines)} new headlines with AI...")
-                breaking_items = filter_breaking_news(new_headlines, recent_titles)
+                # [1차] 제목 기반 후보 선별
+                print(f"🔍 [Pass 1] Screening {len(new_headlines)} headlines...")
+                candidates = filter_breaking_news(new_headlines, recent_titles)
                 
-                if not breaking_items:
-                    print("🍃 No high-impact breaking news found in this batch.")
-                
-                # 5. 저장 및 알림
-                for item in breaking_items:
-                    save_and_notify(item)
+                if candidates:
+                    # [2차] 본문 데이터 추출 및 심층 분석
+                    print(f"🧐 [Pass 2] Deep analyzing {len(candidates)} candidates...")
+                    final_items = perform_deep_analysis(candidates)
+                    
+                    # 5. 저장 및 알림
+                    for item in final_items:
+                        save_and_notify(item)
+                else:
+                    print("🍃 No high-impact candidates found by titles.")
             else:
                 print("💤 No new headlines to analyze.")
             
-            # 6. 주기 설정 (120초 - 2분마다 체크)
-            # 유동적으로 조절 가능
-            time.sleep(120)
+            # 6. 주기 설정 (120초 - 2분마다 체크 추천, 현재는 180초)
+            time.sleep(180)
             
         except KeyboardInterrupt:
             print("Tracker stopped by user.")
