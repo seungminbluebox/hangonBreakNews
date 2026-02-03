@@ -283,7 +283,7 @@ def perform_deep_analysis(candidates):
             [출력 형식 (JSON 하나만 출력)]
             {{
                 "title": "한국어 15자 이내 (이모지 포함)",
-                "content": "본문의 핵심 수치가 포함된 1~2문장 요약",
+                "content": "본문의 핵심 수치가 포함된 1~2문장 요약(110자 이내)",
                 "importance_score": 7~10점 사이 점수,
                 "category": "market/indicator/geopolitics/corporate 중 선택",
                 "original_url": "{url}"
