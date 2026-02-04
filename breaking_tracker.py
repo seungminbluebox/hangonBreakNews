@@ -7,6 +7,7 @@ import feedparser
 import requests
 from collections import deque
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -148,7 +149,19 @@ def fetch_latest_headlines():
                     # print(f"  ❌ Skip (No Keyword): {title[:50]}...")
                     continue
 
-                link = "https://finance.naver.com" + subject_tag['href']
+                base_link = "https://finance.naver.com" + subject_tag['href']
+                # 네이버 뉴스 링크를 PC/모바일 통합 링크(n.news.naver.com)로 변환 (모바일 접근성 및 PC 가용성 동시 해결)
+                link = base_link
+                try:
+                    parsed = urlparse(base_link)
+                    params = parse_qs(parsed.query)
+                    aid = params.get('article_id', [None])[0]
+                    oid = params.get('office_id', [None])[0]
+                    if aid and oid:
+                        link = f"https://n.news.naver.com/mnews/article/{oid}/{aid}"
+                except:
+                    pass
+
                 date_str = wdate_tag.text.strip().replace(".", "-")
                 
                 try:
@@ -174,9 +187,17 @@ def filter_breaking_news(headlines, recent_titles):
     """
     Gemini AI를 사용하여 수집된 뉴스 중 진짜 '속보' 가치가 있는 것만 선별합니다.
     최근에 이미 보도된 내용과 겹치는지 체크합니다.
+    URL 변조를 방지하기 위해 ID 매핑 방식을 사용합니다.
     """
     if not headlines:
         return []
+
+    # 원본 URL 보존을 위한 ID 매핑
+    headlines_with_id = []
+    for idx, h in enumerate(headlines):
+        h_copy = h.copy()
+        h_copy['temp_id'] = idx
+        headlines_with_id.append(h_copy)
 
     prompt = f"""
     당신은 블룸버그와 로이터의 수석 에디터를 합쳐놓은 듯한 초엘리트 경제 속보 분석가입니다.
@@ -184,7 +205,7 @@ def filter_breaking_news(headlines, recent_titles):
     가볍고 흔한 소식은 과감히 버리세요.
 
     [후보 뉴스 리스트]
-    {json.dumps(headlines, ensure_ascii=False)}
+    {json.dumps(headlines_with_id, ensure_ascii=False)}
 
     [최근 보도된 속보 (중복 금지)]
     {json.dumps(recent_titles, ensure_ascii=False)}
@@ -204,10 +225,10 @@ def filter_breaking_news(headlines, recent_titles):
     - 반드시 JSON 리스트 형식으로만 답변하세요. 
     - 기준에 부합하는 뉴스가 없으면 빈 리스트 []를 반환하세요.
     - 중요도(importance_score): 기사의 파급력에 따라 7~10점으로 부여하세요. (7점 미만은 누락)
+    - temp_id: [후보 뉴스 리스트]에서 해당 뉴스의 temp_id를 그대로 가져오세요.
     - title: 한국어로 15자 이내, 제목만 보고도 상황이 파악되게 명확하고 강렬하게. 문장 끝에 문장에 어울리는 이모지 하나 추가.
     - content: 수치나 핵심 팩트를 포함하여 1~2문장으로 압축.
     - category: 'market', 'indicator', 'geopolitics', 'corporate' 중 최적의 카테고리 선택.
-    - original_url: [후보 뉴스 리스트]에서 해당 뉴스의 link를 그대로 가져와서 포함하세요.
     """
 
     try:
@@ -220,19 +241,25 @@ def filter_breaking_news(headlines, recent_titles):
         
         candidates = json.loads(text.strip())
         
-        # 필터링 결과 로그 추가
-        input_titles = [h['title'] for h in headlines]
-        output_titles = [c['title'] for c in candidates] # AI가 새로 지은 제목일 수 있음 (원문 제목과 다를 수 있음)
-        # 원본 링크로 비교하여 탈락한 것들 찾기
-        candidate_urls = [c.get('original_url') for c in candidates]
+        # URL 복원 및 결과 검증
+        valid_candidates = []
+        candidate_ids = set()
+        for c in candidates:
+            t_id = c.get('temp_id')
+            if t_id is not None and 0 <= t_id < len(headlines):
+                # 원본 URL을 코드가 직접 유지한 데이터에서 매핑 (AI 변조 방지)
+                c['original_url'] = headlines[t_id]['link']
+                valid_candidates.append(c)
+                candidate_ids.add(t_id)
         
-        for h in headlines:
-            if h['link'] not in candidate_urls:
+        # 필터링 결과 로그 출력
+        for h_id, h in enumerate(headlines):
+            if h_id not in candidate_ids:
                 print(f"  🗑️ AI Rejected: {h['title'][:50]}...")
             else:
                 print(f"  💎 AI Selected: {h['title'][:50]}...")
 
-        return candidates
+        return valid_candidates
     except Exception as e:
         print(f"AI filtering error: {e}")
         return []
@@ -285,8 +312,7 @@ def perform_deep_analysis(candidates):
                 "title": "한국어 15자 이내 (이모지 포함)",
                 "content": "본문의 핵심 수치가 포함된 1~2문장 요약(110자 이내)",
                 "importance_score": 7~10점 사이 점수,
-                "category": "market/indicator/geopolitics/corporate 중 선택",
-                "original_url": "{url}"
+                "category": "market/indicator/geopolitics/corporate 중 선택"
             }}
             """
             
@@ -299,7 +325,9 @@ def perform_deep_analysis(candidates):
             
             refined_data = json.loads(text.strip())
             if refined_data and refined_data.get('title'):
-                refined_data['image_url'] = top_image # 이미지 경로 유지
+                # 원본 URL을 AI 출력물이 아닌, 기존 코드에서 유지하던 데이터로 강제 할당 (보보 안전성)
+                refined_data['original_url'] = url
+                refined_data['image_url'] = top_image
                 refined_items.append(refined_data)
                 print(f"  ✨ Deep Analysis Success: {refined_data['title']}")
             else:
