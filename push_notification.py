@@ -46,7 +46,7 @@ def send_push_to_all(title, body, url="/"):
                 vapid_private_key=VAPID_PRIVATE_KEY,
                 vapid_claims=VAPID_CLAIMS.copy(),
                 ttl=86400, # 24시간 동안 재시도
-                urgency="high" # 즉시 전송 시도
+                headers={"Urgency": "high"} # 즉시 전송 시도
             )
             print(f"알림 전송 성공: {sub_record['id']}")
         except WebPushException as ex:
