@@ -44,15 +44,20 @@ def send_push_to_all(title, body, url="/"):
                     "url": url
                 }),
                 vapid_private_key=VAPID_PRIVATE_KEY,
-                vapid_claims=VAPID_CLAIMS.copy()
+                vapid_claims=VAPID_CLAIMS.copy(),
+                ttl=86400, # 24시간 동안 재시도
+                urgency="high" # 즉시 전송 시도
             )
             print(f"알림 전송 성공: {sub_record['id']}")
         except WebPushException as ex:
-            print(f"알림 전송 실패 (ID: {sub_record['id']}): {ex}")
-            # 만약 구독이 만료되었거나 잘못된 경우 DB에서 삭제 처리
-            if ex.response and ex.response.status_code in [404, 410]:
-                supabase.table("push_subscriptions").delete().eq("id", sub_record["id"]).execute()
-                print(f"만료된 구독 삭제됨: {sub_record['id']}")
+            if ex.response is not None:
+                print(f"알림 전송 실패 (ID: {sub_record['id']}, Status: {ex.response.status_code}): {ex}")
+                # 만약 구독이 만료되었거나 잘못된 경우 DB에서 삭제 처리
+                if ex.response.status_code in [404, 410]:
+                    supabase.table("push_subscriptions").delete().eq("id", sub_record["id"]).execute()
+                    print(f"만료된 구독 삭제됨: {sub_record['id']}")
+            else:
+                print(f"알림 전송 실패 (ID: {sub_record['id']}): {ex}")
         except Exception as e:
             print(f"알림 전송 중 기타 에러 발생: {e}")
 
@@ -60,8 +65,4 @@ if __name__ == "__main__":
     # 테스트용
     now = datetime.now()
     date_str = f"{now.month}월 {now.day}일"
-    send_push_to_all(
-        title="[속보] 시스템 가동 테스트 🚀", 
-        body=f"{date_str} 실시간 뉴스 알림 시스템이 정상적으로 시작되었습니다.", 
-        url="/live"
-    )
+    send_push_to_all("Hang on!", f"{date_str} 새로운 경제 리포트가 업데이트되었습니다.", "/news/daily-report")
