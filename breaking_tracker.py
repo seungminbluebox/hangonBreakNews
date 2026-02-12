@@ -16,7 +16,7 @@ import google.generativeai as genai
 
 # 상위 디렉토리 참조 추가
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from push_notification import send_push_to_all
+from push_notification import send_push_notification
 
 load_dotenv()
 
@@ -379,11 +379,12 @@ def save_and_notify(news_item):
         if score >= 9:
             prefix = "🚨[초긴급]"
         
-        # 2. 실시간 푸시 알림 (전체 알림 전송)
-        send_push_to_all(
+        # 2. 실시간 푸시 알림 (카테고리: breaking_news)
+        send_push_notification(
             title=f"{prefix} {title}",
             body=content,
-            url="/live" # 속보 타임라인 전용 페이지로 링크
+            url="/live", # 속보 타임라인 전용 페이지로 링크
+            category="breaking_news"
         )
     except Exception as e:
         print(f"Error in save_and_notify: {e}")

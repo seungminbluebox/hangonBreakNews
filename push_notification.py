@@ -15,22 +15,33 @@ VAPID_CLAIMS = {
     "sub": "mailto:boxmagic25@gmail.com"
 }
 
-def send_push_to_all(title, body, url="/"):
+def send_push_notification(title, body, url="/", category=None):
+    """
+    특정 카테고리를 구독한 사용자에게만 푸시 알림을 전송합니다.
+    category가 None인 경우 전체 전송(하위 호환성)
+    """
     if not VAPID_PRIVATE_KEY:
         print("VAPID_PRIVATE_KEY가 설정되지 않았습니다.")
         return
 
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     
-    # 구독 정보 가져오기
+    # 구독 정보 가져오기 (카테고리 필터링 적용)
     try:
-        response = supabase.table("push_subscriptions").select("*").execute()
+        query = supabase.table("push_subscriptions").select("*")
+        
+        # 카테고리가 지정된 경우, 해당 설정이 true인 사용자만 필터링
+        if category:
+            query = query.eq(f"preferences->>{category}", "true")
+            print(f"카테고리 필터링 적용: {category}")
+            
+        response = query.execute()
         subscriptions = response.data
     except Exception as e:
         print(f"구독 정보를 불러오는 중 에러 발생: {e}")
         return
 
-    print(f"총 {len(subscriptions)}명의 구독자에게 알림을 전송합니다.")
+    print(f"총 {len(subscriptions)}명의 대상자에게 알림을 전송합니다.")
 
     for sub_record in subscriptions:
         try:
@@ -52,7 +63,6 @@ def send_push_to_all(title, body, url="/"):
         except WebPushException as ex:
             if ex.response is not None:
                 print(f"알림 전송 실패 (ID: {sub_record['id']}, Status: {ex.response.status_code}): {ex}")
-                # 만약 구독이 만료되었거나 잘못된 경우 DB에서 삭제 처리
                 if ex.response.status_code in [404, 410]:
                     supabase.table("push_subscriptions").delete().eq("id", sub_record["id"]).execute()
                     print(f"만료된 구독 삭제됨: {sub_record['id']}")
@@ -61,8 +71,13 @@ def send_push_to_all(title, body, url="/"):
         except Exception as e:
             print(f"알림 전송 중 기타 에러 발생: {e}")
 
+def send_push_to_all(title, body, url="/"):
+    """기존 함수 유지 (내부적으로 전체 전송 호출)"""
+    send_push_notification(title, body, url)
+
 if __name__ == "__main__":
     # 테스트용
     now = datetime.now()
     date_str = f"{now.month}월 {now.day}일"
-    send_push_to_all("Hang on!", f"{date_str} 새로운 경제 리포트가 업데이트되었습니다.", "/news/daily-report")
+    # 예시: 속보 알림 테스트
+    send_push_notification("Hang on! 속보", f"{date_str} 시장 급변동 알림", "/", category="breaking_news")
