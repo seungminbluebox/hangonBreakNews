@@ -12,9 +12,12 @@ https://console.cloud.google.com/
 
 # 2. 프로젝트 폴더 이동
 cd ~/hangon_breaknews
+cd ~/kospinight
 
 # 3. 가상 환경 활성화
 source venv/bin/activate
+# 4. 비활성화
+deactivate
 
 ```
 
@@ -35,6 +38,7 @@ pip install -r requirements.txt
 # 3. PM2 프로세스 재시작 (변경사항 반영)
 pm2 restart breaking-news
 pm2 restart exchange-monitor
+pm2 restart kospi-night
 
 ```
 
@@ -49,6 +53,7 @@ pm2 restart exchange-monitor
 ```bash
 pm2 logs breaking-news    # 뉴스 트래커 로그
 pm2 logs exchange-monitor # 환율 트래커 로그
+pm2 logs kospi-night # 코야선 로그
 
 ```
 
@@ -116,3 +121,8 @@ df -h
 - **디스크 용량**: 20GB로 확장되었으므로 넉넉하지만, `df -h`에서 `Use%`가 80%를 넘지 않게 관리해 주세요-
 
 ---
+
+## 7. nano .env
+
+수정작업 완료 후
+ctrl+o, 엔터, ctrl+x
