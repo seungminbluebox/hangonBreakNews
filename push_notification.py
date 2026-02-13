@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pywebpush import webpush, WebPushException
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -12,13 +12,19 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
 VAPID_CLAIMS = {
-    "sub": "mailto:boxmagic25@gmail.com"
+    "sub": "mailto:boxmagic25@gmail.com"    
 }
+
+def is_quiet_time():
+    """현재 한국 시간(KST)이 에티켓 시간(00:00~09:00)인지 확인"""
+    # UTC 기준 현재 시간에서 9시간 더하기 (KST)
+    now_kst = datetime.utcnow() + timedelta(hours=9)
+    return 0 <= now_kst.hour < 9
 
 def send_push_notification(title, body, url="/", category=None):
     """
     특정 카테고리를 구독한 사용자에게만 푸시 알림을 전송합니다.
-    category가 None인 경우 전체 전송(하위 호환성)
+    에티켓 모드가 활성화된 사용자는 밤 시간대에 알림을 보관함(Queue)으로 보냅니다.
     """
     if not VAPID_PRIVATE_KEY:
         print("VAPID_PRIVATE_KEY가 설정되지 않았습니다.")
@@ -30,7 +36,6 @@ def send_push_notification(title, body, url="/", category=None):
     try:
         query = supabase.table("push_subscriptions").select("*")
         
-        # 카테고리가 지정된 경우, 해당 설정이 true인 사용자만 필터링
         if category:
             query = query.eq(f"preferences->>{category}", "true")
             print(f"카테고리 필터링 적용: {category}")
@@ -41,10 +46,25 @@ def send_push_notification(title, body, url="/", category=None):
         print(f"구독 정보를 불러오는 중 에러 발생: {e}")
         return
 
-    print(f"총 {len(subscriptions)}명의 대상자에게 알림을 전송합니다.")
+    quiet_mode = is_quiet_time()
+    print(f"총 {len(subscriptions)}명의 대상자에게 알림 처리를 시작합니다. (현재 야간 모드 여부: {quiet_mode})")
 
     for sub_record in subscriptions:
         try:
+            prefs = sub_record.get("preferences", {})
+            etiquette_enabled = prefs.get("etiquette_mode", False)
+
+            # 에티켓 모드가 켜져 있고 현재가 밤 시간대라면 큐에 저장
+            if etiquette_enabled and quiet_mode:
+                supabase.table("notification_queue").insert([{
+                    "subscription_id": sub_record["id"],
+                    "title": title,
+                    "body": body,
+                    "url": url
+                }]).execute()
+                print(f"에티켓 모드: 알림 보류 및 큐 저장 (ID: {sub_record['id']})")
+                continue
+
             subscription_info = sub_record["subscription"]
             
             webpush(
@@ -56,20 +76,20 @@ def send_push_notification(title, body, url="/", category=None):
                 }),
                 vapid_private_key=VAPID_PRIVATE_KEY,
                 vapid_claims=VAPID_CLAIMS.copy(),
-                ttl=86400, # 24시간 동안 재시도
-                headers={"Urgency": "high"} # 즉시 전송 시도
+                ttl=86400,
+                headers={"Urgency": "high"}
             )
             print(f"알림 전송 성공: {sub_record['id']}")
         except WebPushException as ex:
             if ex.response is not None:
-                print(f"알림 전송 실패 (ID: {sub_record['id']}, Status: {ex.response.status_code}): {ex}")
+                print(f"알림 전송 실패 (ID: {sub_record['id']}, Status: {ex.response.status_code})")
                 if ex.response.status_code in [404, 410]:
                     supabase.table("push_subscriptions").delete().eq("id", sub_record["id"]).execute()
                     print(f"만료된 구독 삭제됨: {sub_record['id']}")
             else:
                 print(f"알림 전송 실패 (ID: {sub_record['id']}): {ex}")
         except Exception as e:
-            print(f"알림 전송 중 기타 에러 발생: {e}")
+            print(f"알림 전송 중 에러 발생: {e}")
 
 def send_push_to_all(title, body, url="/"):
     """기존 함수 유지 (내부적으로 전체 전송 호출)"""
@@ -79,5 +99,5 @@ if __name__ == "__main__":
     # 테스트용
     now = datetime.now()
     date_str = f"{now.month}월 {now.day}일"
-    # 예시: 속보 알림 테스트
-    send_push_notification("Hang on! 속보", f"{date_str} 시장 급변동 알림", "/", category="breaking_news")
+    # 예시: 데일리 업데이트 카테고리로 발송 테스트
+    send_push_notification("Hang on!", f"{date_str} 새로운 경제 리포트가 업데이트되었습니다.", "/news/daily-report", category="daily_update")
