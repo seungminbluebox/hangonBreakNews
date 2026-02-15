@@ -9,6 +9,7 @@ import FinanceDataReader as fdr
 # 1. 레포지토리 환경 설정 및 push_notification 가져오기
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 from push_notification import send_push_notification
+from revalidate import revalidate_path
 
 load_dotenv()
 
@@ -70,6 +71,9 @@ class ExchangeMonitor:
                 url="/currency-desk",
                 category="common_currency" 
             )
+            
+            # 페이지 캐시 갱신 (환율 데스크)
+            revalidate_path("/currency-desk")
             
             self.last_step = current_step
         else:

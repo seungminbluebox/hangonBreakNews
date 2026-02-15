@@ -17,6 +17,7 @@ import google.generativeai as genai
 # 상위 디렉토리 참조 추가
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from push_notification import send_push_notification
+from revalidate import revalidate_path
 
 load_dotenv()
 
@@ -373,6 +374,10 @@ def save_and_notify(news_item):
 
         supabase.table("breaking_news").insert(data).execute()
         print(f"🚀 New Breaking News Saved: {title}")
+        
+        # On-Demand Revalidation
+        revalidate_path("/live")
+        revalidate_path("/") # 메인 페이지 마켓 티커 등 업데이트용
 
         # 중요도에 따른 접두어 및 강조
         prefix = "[속보]"
