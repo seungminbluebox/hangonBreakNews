@@ -1,9 +1,17 @@
 import os
+import sys
 import json
 from datetime import datetime, timedelta
 from pywebpush import webpush, WebPushException
 from supabase import create_client, Client
 from dotenv import load_dotenv
+
+# 같은 폴더 혹은 상위 폴더의 revalidate 가져오기
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+try:
+    from revalidate import revalidate_path
+except ImportError:
+    def revalidate_path(path): pass
 
 # .env 파일 로드
 load_dotenv()
@@ -47,7 +55,17 @@ def send_push_notification(title, body, url="/", category=None):
         return
 
     quiet_mode = is_quiet_time()
-    print(f"총 {len(subscriptions)}명의 대상자에게 알림 처리를 시작합니다. (현재 야간 모드 여부: {quiet_mode})")
+    if quiet_mode:
+        print(f"현재 에티켓 시간대입니다. ( {len(subscriptions)}명의 대상자에게 알림 처리를 시작합니다.)")
+    else:
+        print(f"현재 활동 시간대입니다. ( {len(subscriptions)}명의 대상자에게 알림 처리를 시작합니다.)")
+
+    # 알림 전송과 동시에 관련 페이지 캐시 갱신 (Vercel 최적화)
+    if url:
+        revalidate_path(url)
+        # 메인 페이지도 함께 갱신 (마켓 티커 등 업데이트용)
+        if url != "/":
+            revalidate_path("/")
 
     for sub_record in subscriptions:
         try:
