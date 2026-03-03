@@ -28,7 +28,8 @@ class ExchangeMonitor:
     def __init__(self):
         self.kst = pytz.timezone('Asia/Seoul')
         self.daily_base_price = None
-        self.last_step = 0      # 마지막으로 알림을 보낸 단계
+        self.last_step = 0      # 마지막으로 알림을 보낸 단계 (정수: 1, 2, 3...)
+        self.last_direction = None # 마지막으로 알림을 보낸 방향 ("상승", "하락")
         self.REFERENCE_HOUR = 9 # 오전 9시 기준
         self.STEP_UNIT = 10     # 10원 단위 알림
 
@@ -44,6 +45,7 @@ class ExchangeMonitor:
             if self.daily_base_price != current_price:
                 self.daily_base_price = current_price
                 self.last_step = 0
+                self.last_direction = None
                 # [수정] 소수점 둘째 자리까지만 표시 (.2f)
                 print(f"🌅 [{now.strftime('%H:%M:%S')}] 오늘의 9시 기준환율 설정: {self.daily_base_price:.2f}원")
 
@@ -56,11 +58,15 @@ class ExchangeMonitor:
         # 2. 변동 폭 및 단계(Step) 계산
         diff = current_price - self.daily_base_price
         current_step = int(abs(diff) // self.STEP_UNIT)
+        current_direction = "상승" if diff > 0 else "하락"
 
-        # 3. 새로운 10원 계단(Step)에 진입했을 때만 알림 발송
-        if current_step != self.last_step and current_step > 0:
-            direction = "상승 📈" if diff > 0 else "하락 📉"
-            title = f"환율 {direction} ({current_step * self.STEP_UNIT}원 이상 변동)"
+        # 3. 알림 조건 (새로운 계단 진입 OR 방향 전환 시 해당 계단 처음 도달)
+        is_new_step = current_step > self.last_step
+        is_direction_changed = current_direction != self.last_direction and self.last_direction is not None
+
+        if (is_new_step or is_direction_changed) and current_step > 0:
+            direction_str = "상승 📈" if diff > 0 else "하락 📉"
+            title = f"환율 {direction_str} ({current_step * self.STEP_UNIT}원 이상 변동)"
             body = f"현재: {current_price:.2f}원 (오전 9시 기준가 대비 {diff:+.1f}원)"
             
             print(f"🔔 알림 발송: {title}")
@@ -76,6 +82,7 @@ class ExchangeMonitor:
             revalidate_path("/currency-desk")
             
             self.last_step = current_step
+            self.last_direction = current_direction
         else:
             # 실시간 상태 로그 (1분마다 출력)
             print(f"[{now.strftime('%H:%M:%S')}] 현재: {current_price:.2f}원 (9시기준 변동: {diff:+.1f}원)")

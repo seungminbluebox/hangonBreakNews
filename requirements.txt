@@ -189,3 +189,6 @@ yarl==1.22.0
 yfinance==1.0
 zipp==3.23.0
 zope.interface==8.2
+finance-datareader
+pytz
+python-dotenv
