@@ -28,53 +28,50 @@ class ExchangeMonitor:
     def __init__(self):
         self.kst = pytz.timezone('Asia/Seoul')
         self.daily_base_price = None
-        self.last_step = 0      # 마지막으로 알림을 보낸 단계 (정수: 1, 2, 3...)
-        self.last_direction = None # 마지막으로 알림을 보낸 방향 ("상승", "하락")
-        self.max_step_reached = 0  # 해당 방향으로 도달한 최고 단계
         self.REFERENCE_HOUR = 9 # 오전 9시 기준
         self.STEP_UNIT = 10     # 10원 단위 알림
+        
+        # 오늘 알림을 보낸 단계들을 저장하는 Set (파일 저장 없이 메모리 관리)
+        self.notified_steps = set() # 예: {1, 2, -1}
+        self.last_notified_date = None
 
     def check_and_notify(self):
         now = datetime.now(self.kst)
+        today = now.date()
         current_price = get_usd_krw()
         
         if current_price is None:
             return
 
-        # 1. 매일 오전 9시 정각에 기준가 초기화
-        if now.hour == self.REFERENCE_HOUR and now.minute == 0:
+        # 1. 날짜가 바뀌었거나 오전 9시 정각에 기준가 및 이력 초기화
+        if (self.last_notified_date != today) or (now.hour == self.REFERENCE_HOUR and now.minute == 0):
             if self.daily_base_price != current_price:
                 self.daily_base_price = current_price
-                self.last_step = 0
-                self.last_direction = None
-                self.max_step_reached = 0
-                # [수정] 소수점 둘째 자리까지만 표시 (.2f)
-                print(f"🌅 [{now.strftime('%H:%M:%S')}] 오늘의 9시 기준환율 설정: {self.daily_base_price:.2f}원")
+                self.notified_steps.clear() # 날짜가 바뀌거나 9시가 되면 알림 기록 초기화
+                self.last_notified_date = today
+                print(f"🌅 [{now.strftime('%H:%M:%S')}] 오늘의 9시 기준환율 설정 및 기록 초기화: {self.daily_base_price:.2f}원")
 
         # 기준가가 아직 설정되지 않은 경우 (프로그램 첫 실행 시)
         if self.daily_base_price is None:
             self.daily_base_price = current_price
-            # [수정] 소수점 둘째 자리까지만 표시 (.2f)
+            self.last_notified_date = today
             print(f"📌 모니터링 시작 (현재 기준가: {self.daily_base_price:.2f}원)")
 
         # 2. 변동 폭 및 단계(Step) 계산
         diff = current_price - self.daily_base_price
-        current_step = int(abs(diff) // self.STEP_UNIT)
-        current_direction = "상승" if diff > 0 else "하락"
+        # 상승은 양의 정수(1, 2, ...), 하락은 음의 정수(-1, -2, ...)
+        current_step = int(diff // self.STEP_UNIT)
+        
+        # 0단계(10원 미만 변동)는 무시
+        if current_step == 0:
+            return
 
-        # 3. 알림 조건 (더 멀어지는 방향으로 새로운 최고 단계 기록 시 OR 방향 전환 시)
-        is_farther_step = current_step > self.max_step_reached
-        is_direction_changed = (current_direction != self.last_direction and self.last_direction is not None)
-
-        if (is_farther_step or is_direction_changed) and current_step > 0:
-            # 방향이 바뀌었을 경우 최고 도달 단계 초기화
-            if is_direction_changed:
-                self.max_step_reached = current_step
-            else:
-                self.max_step_reached = max(self.max_step_reached, current_step)
-
+        # 3. 알림 중복 체크 (Set 활용)
+        if current_step not in self.notified_steps:
             direction_str = "상승 📈" if diff > 0 else "하락 📉"
-            title = f"환율 {direction_str} ({current_step * self.STEP_UNIT}원 이상 변동)"
+            abs_step_val = abs(current_step) * self.STEP_UNIT
+            
+            title = f"환율 {direction_str} ({abs_step_val}원 이상 변동)"
             body = f"현재: {current_price:.2f}원 (오전 9시 기준가 대비 {diff:+.1f}원)"
             
             print(f"🔔 알림 발송: {title}")
@@ -86,12 +83,14 @@ class ExchangeMonitor:
                 category="common_currency" 
             )
             
-            # 페이지 캐시 갱신 (환율 데스크)
             revalidate_path("/currency-desk")
             
-            self.last_step = current_step
-            self.last_direction = current_direction
+            # 이 단계(current_step)를 기록하여 오늘 다시는 알리지 않음
+            self.notified_steps.add(current_step)
         else:
+            # 이미 알림을 보낸 단계에서의 미세한 변동(노이즈)은 로그만 출력하거나 무시
+            pass
+
             # 실시간 상태 로그 (1분마다 출력)
             print(f"[{now.strftime('%H:%M:%S')}] 현재: {current_price:.2f}원 (9시기준 변동: {diff:+.1f}원)")
 
