@@ -293,7 +293,26 @@ def perform_deep_analysis(candidates):
             top_image = article.top_image
             
             if len(full_text) < 100: # 본문이 너무 적으면 패스하거나 제목 기반 유지
-                print(f"⚠️ Text too short for {item['title']}, using title-based summary.")
+                print(f"⚠️ Text too short for {item['title']}, generating rich content from title.")
+                # 본문이 짧을 경우 제목을 바탕으로 상세 내용을 추론하여 생성하도록 프롬프트 강화
+                fallback_prompt = f"""
+                당신은 경제 전문 에디터입니다. 다음의 '짧은 속보 제목'을 바탕으로, 
+                독자가 상황을 충분히 파악할 수 있도록 팩트 중심의 상세 문장(50자~100자 사이)을 생성해주세요.
+                
+                [기사 제목]: {item['title']}
+                
+                [지시사항]
+                - 제목에 담긴 핵심 사건(유가 변동, 증시 출발 등)을 풀어서 설명하세요.
+                - 절대 '본문이 없다'는 식의 무책임한 말은 하지 마세요.
+                - 반드시 30자 이상의 완성된 문장으로 작성하세요.
+                - 블룸버그/로이터 뉴스 톤앤매너를 유지하세요.
+                """
+                try:
+                    fb_response = model.generate_content(fallback_prompt)
+                    item['content'] = fb_response.text.strip()
+                except:
+                    item['content'] = f"{item['title']} 관련 긴급 시장 상황이 발생했습니다. 자세한 내용은 원본 기사를 참조하시기 바랍니다."
+                
                 item['image_url'] = top_image
                 refined_items.append(item)
                 continue
