@@ -22,7 +22,7 @@ from revalidate import revalidate_path
 load_dotenv()
 
 # 환경 변수 및 설정
-GEMINI_MODEL_NAME= os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
+GEMINI_MODEL_NAME= os.getenv("GEMINI_MODEL_NAME", "gemini-3-flash-preview")
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -33,17 +33,20 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # 감시할 뉴스 소스 (RSS) - 실시간 '속보' 전용 시스템으로 전면 교체
 RSS_FEEDS = [
-    # 1. Google News - 초단위 속보 검색 (검색 쿼리에 'breaking news' 강제)
-    "https://news.google.com/rss/search?q=intitle:%22breaking+news%22+OR+intitle:%22속보%22+when:1h&hl=en-US&gl=US&ceid=US:en",
+    # 1. MarketWatch MarketPulse (단신/수치 팩트 최강, 가장 빠름)
+    "http://feeds.marketwatch.com/marketwatch/marketpulse/",
     
-    # 2. Yahoo Finance - 속보(Latest) 전용 섹션 RSS
+    # 2. CNBC Economy (미국 거시경제/지표/Fed 공신력 최고)
+    "https://www.cnbc.com/id/20910258/device/rss/rss.html",
+
+    # 3. Yahoo Finance (글로벌 증시 전반)
     "https://finance.yahoo.com/news/rss",
 
-    # 4. WSJ Markets
-    "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
-
-    # 5. Investing.com Breaking News
-    "https://www.investing.com/rss/news_285.rss"
+    # 4. Investing.com Breaking News
+    "https://www.investing.com/rss/news_285.rss",
+    
+    # 5. BBC News World (지정학적 리스크, 전쟁, 외교 속보)
+    "http://feeds.bbci.co.uk/news/world/rss.xml"
 ]
 
 # 메모리 상에서 이미 처리한 뉴스 제목 저장 (중복 방지 및 메모리 효율화)
@@ -93,10 +96,10 @@ def fetch_latest_headlines():
                 title_lower = entry.title.lower()
                 
                 # [강화된 필터 1] 
-                # 전략: 고품질 소스(Source 3, 4, 5)이거나, 속보 키워드가 있거나, 시장 핵심 지표가 포함된 경우만 선별
+                # 전략: 고품질 소스(Source 1, 2, 5)이거나, 속보 키워드가 있거나, 시장 핵심 지표가 포함된 경우만 선별
                 is_breaking = any(kw in title_lower for kw in BREAKING_KEYWORDS)
                 is_indicator = any(ikw in title_lower for ikw in MARKET_INDICATORS)
-                is_trusted_source = i >= 3 # CNBC, WSJ, Investing.com 등은 무조건 검토
+                is_trusted_source = i in [1, 2, 5] # MarketWatch, CNBC, BBC는 무조건 검토
                 
                 if not (is_breaking or is_indicator or is_trusted_source):
                     continue
