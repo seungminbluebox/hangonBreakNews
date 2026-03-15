@@ -46,7 +46,13 @@ RSS_FEEDS = [
     "https://www.investing.com/rss/news_285.rss",
     
     # 5. BBC News World (지정학적 리스크, 전쟁, 외교 속보)
-    "http://feeds.bbci.co.uk/news/world/rss.xml"
+    "http://feeds.bbci.co.uk/news/world/rss.xml",
+
+    # 6. ForexLive (외환시장, 주요국 중앙은행 인사들의 실시간 발언, 거시경제 단신이 가장 빠름)
+    "https://www.forexlive.com/feed/news",
+
+    # 7. Wall Street Journal Markets (월스트리트저널 글로벌 시장 동향, 공신력 최고 수준)
+    "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
 ]
 
 # 메모리 상에서 이미 처리한 뉴스 제목 저장 (중복 방지 및 메모리 효율화)
@@ -78,10 +84,10 @@ def fetch_latest_headlines():
     now_utc = datetime.now(timezone.utc)
     time_limit_utc = now_utc - timedelta(minutes=30)
     
-    # 속보를 나타내는 핵심 키워드 (입구 컷용)
-    BREAKING_KEYWORDS = ["속보", "breaking", "urgent", "just in", "alert", "flash", "급보", "공시", "[특징주]", "exclusive", "scoop"]
+    # 속보를 나타내는 핵심 키워드 (입구 컷용) - 기사 포함율을 높이기 위해 완화된 키워드 대거 추가
+    BREAKING_KEYWORDS = ["속보", "breaking", "urgent", "just in", "alert", "flash", "급보", "공시", "[특징주]", "exclusive", "scoop", "단독", "급등", "급락", "최고", "최저", "돌파", "붕괴", "surges", "jumps", "plunges", "soars", "tumbles", "rises", "falls", "drops", "hits", "상승", "하락", "폭등", "폭락", "강세", "약세", "마감"]
     # 숫자가 포함되거나 핵심 경제 지표인 경우 단어에 상관없이 AI에게 전달할 '관심 키워드'
-    MARKET_INDICATORS = ["cpi", "pce", "fomc", "fed", "nasdaq", "kospi", "earnings", "surprise", "cuts", "hikes", "gdp", "nfp", "nvidia", "samsung"]
+    MARKET_INDICATORS = ["cpi", "pce", "fomc", "fed", "nasdaq", "kospi", "earnings", "surprise", "cuts", "hikes", "gdp", "nfp", "nvidia", "samsung", "apple", "tesla", "bitcoin", "비트코인", "금리", "환율", "유가", "실적", "인플레이션", "지수", "증시", "주가", "달러", "국채", "수주", "매출"]
     
     custom_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     
@@ -96,10 +102,10 @@ def fetch_latest_headlines():
                 title_lower = entry.title.lower()
                 
                 # [강화된 필터 1] 
-                # 전략: 고품질 소스(Source 1, 2, 5)이거나, 속보 키워드가 있거나, 시장 핵심 지표가 포함된 경우만 선별
+                # 전략: 고품질 소스(Source 1, 2, 5, 6, 7, 8)이거나, 속보 키워드가 있거나, 시장 핵심 지표가 포함된 경우만 선별
                 is_breaking = any(kw in title_lower for kw in BREAKING_KEYWORDS)
                 is_indicator = any(ikw in title_lower for ikw in MARKET_INDICATORS)
-                is_trusted_source = i in [1, 2, 5] # MarketWatch, CNBC, BBC는 무조건 검토
+                is_trusted_source = i in [1, 2, 5, 6, 7, 8] # MarketWatch, CNBC, BBC, TE, ForexLive, WSJ는 무조건 검토
                 
                 if not (is_breaking or is_indicator or is_trusted_source):
                     continue
@@ -148,8 +154,8 @@ def fetch_latest_headlines():
                 title = subject_tag.text.strip()
                 title_lower = title.lower()
 
-                # [필터 1] 네이버 뉴스도 제목에 '속보' 키워드가 있는 것만 선별
-                if not any(kw in title_lower for kw in BREAKING_KEYWORDS):
+                # [필터 1] 네이버 뉴스: 속보 키워드나 주요 시장 지표/경제 단어가 하나라도 있으면 무조건 통과 (대폭 완화)
+                if not (any(kw in title_lower for kw in BREAKING_KEYWORDS) or any(ikw in title_lower for ikw in MARKET_INDICATORS)):
                     # print(f"  ❌ Skip (No Keyword): {title[:50]}...")
                     continue
 
@@ -204,9 +210,9 @@ def filter_breaking_news(headlines, recent_titles):
         headlines_with_id.append(h_copy)
 
     prompt = f"""
-    당신은 블룸버그와 로이터의 수석 에디터를 합쳐놓은 듯한 초엘리트 경제 속보 분석가입니다.
-    현재 수집된 뉴스 목록에서 '진짜 시장을 뒤흔들 파괴력 있는 속보'만 단 한두 개, 혹은 하나도 선택하지 않을 수 있습니다. 
-    가볍고 흔한 소식은 과감히 버리세요.
+    당신은 글로벌 경제 및 증시 트렌드를 발빠르게 전달하는 수석 에디터입니다.
+    현재 수집된 뉴스 목록에서 '시장의 흐름을 파악하는 데 도움이 되는 유의미한 뉴스'들을 선별해주세요.
+    너무 문턱을 높이지 말고, 특정 종목의 급등락이나 거시 경제의 방향성을 보여주는 소식이라면 적극적으로 선택하세요.
 
     [후보 뉴스 리스트]
     {json.dumps(headlines_with_id, ensure_ascii=False)}
@@ -214,23 +220,22 @@ def filter_breaking_news(headlines, recent_titles):
     [최근 보도된 속보 (중복 금지)]
     {json.dumps(recent_titles, ensure_ascii=False)}
 
-    [엄격하되 유연한 필터링 기준]
-    1. **필터링 대상 (Skip)**: 단순 시황 요약, 일반적인 증시 전망, 소형주 뉴스, 일상적인 홍보성 기사, 이미 알려진 정보의 단순 재탕.
-    2. **우선 순위 (Must Include)**:
-       - **핵심 지표**: CPI, PCE, 고용보고서, 금리 결정 등 주요 경제지표 공식 발표 즉시. 구체적인 수치(이자율, 증감폭, 예상치 대비 발표치)가 포함된 뉴스를 우선적으로 선발하세요.
-       - **시장 변동**: 환율 급등락, 국채 금리 폭등, 주요 지수(KOSPI, NASDAQ)의 유의미한 변동 및 추세 전환.
-       - **기업 속보**: 삼성전자, SK하이닉스, 애플, 엔비디아 등 대장주들의 '기대치를 크게 벗어난' 실적 발표나 핵심 공시.
-       - **정책/긴급**: 정부의 중대 시장 정책 발표, 금융권 긴급 수혈, 또는 실제 발생한 지정학적 충격.
-    3. **무게감 판단**: '이 소식을 알게 됨으로써 투자자가 즉각적으로 행동을 고민하게 만드는가?'를 기준으로 삼으세요. 
-    4. **팩트 중심**: 미사여구보다는 구체적인 숫자($ , %, bp 등)가 포함된 팩트 위주의 정보를 선호합니다.
-    5. **중복 배제**: 이미 보도된 목록과 핵심 키워드가 겹치더라도, '새로운 수치가 발표'되었거나 '상황이 급진전'된 것이라면 포함하세요.
+    [완화된 선별 기준]
+    1. **필터링 대상 (Skip)**: 광고, 단순 홍보성 기사, 어제와 똑같은 내용의 재탕 시황.
+    2. **적극 포함 대상 (Include)**:
+       - 주요 경제지표 및 중앙은행 인사들의 발언.
+       - 주요 기업(크기 불문, 시장 관심도가 높은 기업)의 실적, M&A, 신제품 발표, 대규모 수주.
+       - 원자재(유가, 금) 및 암호화폐(비트코인 등)의 의미 있는 가격 변동.
+       - 외교, 전쟁 등 거시적 환경에 영향을 미치는 국제 뉴스.
+    3. **무게감 판단**: '투자자가 오늘 하루 시장 분위기와 개별 종목의 흐름을 파악하기 위해 알아야 할 소식인가?'를 기준으로 넓게 수용하세요.
+    4. **팩트 중심**: 미사여구보다는 구체적인 숫자나 팩트가 포함된 정보를 선호합니다.
 
     [출력 형식]
     - 반드시 JSON 리스트 형식으로만 답변하세요. 
-    - 기준에 부합하는 뉴스가 없으면 빈 리스트 []를 반환하세요.
-    - 중요도(importance_score): 기사의 파급력에 따라 7~10점으로 부여하세요. (7점 미만은 누락)
+    - 정보 가치가 아예 없는 낚시성 기사, 광고, 중복 기사인 경우에만 빈 리스트 []를 반환하세요.
+    - 중요도(importance_score): 기사의 파급력에 따라 1~10점으로 부여하세요. (조금이라도 시장 파악에 도움이 된다면 4점 이상을 주어 하루 최소 10건 이상 통과되도록 적극적으로 승인하세요)
     - temp_id: [후보 뉴스 리스트]에서 해당 뉴스의 temp_id를 그대로 가져오세요.
-    - title: 한국어로 15자 이내, 제목만 보고도 상황이 파악되게 명확하고 강렬하게. 문장 끝에 문장에 어울리는 이모지 하나 추가.
+    - title: 한국어로 15자 이내, 제목만 보고도 상황이 파악되게 명확하게. 문장 끝에 문장에 어울리는 이모지 하나 추가.
     - content: 수치나 핵심 팩트를 포함하여 1~2문장으로 압축.
     - category: 'market', 'indicator', 'geopolitics', 'corporate' 중 최적의 카테고리 선택.
     """
