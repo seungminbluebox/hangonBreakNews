@@ -35,18 +35,36 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 RSS_FEEDS = [
     # 1. Reuters (via Google News) - 로이터 통신 (최근 1시간 내 구글에 인덱싱된 로이터 실시간 기사 우회 수집)
     "https://news.google.com/rss/search?q=site:reuters.com+when:1h&hl=en-US&gl=US&ceid=US:en",
+    
+    # 2. Bloomberg (via Google News) - 블룸버그 1시간 내 속보 우회 수집
+    "https://news.google.com/rss/search?q=site:bloomberg.com+when:1h&hl=en-US&gl=US&ceid=US:en",
+    
+    # 3. WSJ (via Google News) - 월스트리트저널 1시간 내 속보 우회 수집
+    "https://news.google.com/rss/search?q=site:wsj.com+when:1h&hl=en-US&gl=US&ceid=US:en",
 
-    # 2. MarketWatch MarketPulse (단신/수치 팩트 최강, 해설 기사가 거의 없고 수치 위주의 가장 빠른 매체)
+    # 4. MarketWatch MarketPulse (단신/수치 팩트 최강, 해설 기사가 거의 없고 수치 위주의 가장 빠른 매체)
     "http://feeds.marketwatch.com/marketwatch/marketpulse/",
 
-    # 3. ForexLive (외환시장, 주요국 중앙은행 인사들의 실시간 발언, 거시경제 단신이 가장 빠름)
+    # 5. CNBC Top & Breaking News (미장 시작 전후 실적발표 및 M&A 최적화)
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114",
+
+    # 6. ForexLive (외환시장, 주요국 중앙은행 인사들의 실시간 발언, 거시경제 단신이 가장 빠름)
     "https://www.forexlive.com/feed/news",
 
-    # 4. FXStreet 실시간 경제 뉴스 (Trading Economics의 403 차단을 완전히 대체하는 가장 빠른 거시경제/외환 단신 매체)
+    # 7. FXStreet 실시간 경제 뉴스 (Trading Economics의 403 차단을 완전히 대체하는 가장 빠른 거시경제/외환 단신 매체)
     "https://www.fxstreet.com/rss",
 
-    # 5. Investing.com Breaking News (순수 속보 채널)
-    "https://www.investing.com/rss/news_285.rss"
+    # 8. Investing.com Breaking News (순수 속보 채널)
+    "https://www.investing.com/rss/news_285.rss",
+    
+    # 9. Investing.com Headlines / Top News (주요 헤드라인 전용 RSS)
+    "https://www.investing.com/rss/news_25.rss",
+    
+    # 10. CoinDesk (주말/새벽 암호화폐 및 거시경제 선행지표 최적화)
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+
+    # 11. TheStreet (미국 주식 개별 종목, 단독 특징주 및 시장 모멘텀 보완)
+    "https://www.thestreet.com/.rss/full/"
 ]
 
 # 메모리 상에서 이미 처리한 뉴스 제목 저장 (중복 방지 및 메모리 효율화)
@@ -74,16 +92,13 @@ def get_recent_news_titles():
 
 def fetch_latest_headlines():
     headlines = []
-    # 1. 기준 시간 설정 (모두 UTC로 통일하여 정확하게 30분 필터링)
+    # 1. 기준 시간 설정 (시차 지연 및 언론사 RSS 반영 지연 대비: 3시간(180분)으로 여유 있게 설정)
+    # 진짜 필터링은 DB 중복 체크 + AI 문맥 파악이 담당하므로 시간은 넉넉하게 잡는 것이 안전함.
     now_utc = datetime.now(timezone.utc)
     time_limit_utc = now_utc - timedelta(minutes=30)
     
-    # 속보를 나타내는 핵심 키워드 (입구 컷용) - '단독', '속보', '폭등락' 등 확실한 시그널 위주로 엄격하게 재강화
-    BREAKING_KEYWORDS = ["속보", "breaking", "urgent", "just in", "alert", "flash", "급보", "공시", "[특징주]", "exclusive", "scoop", "단독", "급등", "급락", "폭등", "폭락", "surges", "plunges", "soars", "tumbles"]
-    # 숫자가 포함되거나 핵심 경제 지표인 경우 단어에 상관없이 AI에게 전달할 '관심 키워드' (최중요 지표/대장주로 압축)
-    MARKET_INDICATORS = ["cpi", "pce", "fomc", "fed", "nasdaq", "kospi", "earnings", "surprise", "cuts", "hikes", "gdp", "nfp", "nvidia", "samsung", "apple", "tesla", "bitcoin", "금리", "환율", "인플레이션", "지수"]
-    
-    # ❌ 절대 통과시키지 않을 '해설/요약/전망' 키워드 (블랙리스트)
+    # ❌ 명백한 '해설/요약/전망' 기사는 AI 토큰 낭비를 막기 위해 1차 블랙리스트로만 걸러냅니다.
+    # 기존의 딱딱한 BREAKING_KEYWORDS, MARKET_INDICATORS는 모두 삭제합니다. (AI 문맥 파악으로 전면 교체)
     EXCLUDE_KEYWORDS = ["전망", "동향", "분석", "마감", "주목할", "이유는", "요약", "정리", "wrap", "recap", "preview", "takeaways", "opinion", "why", "snapshot", "roundup", "should you buy", "what to watch", "칼럼", "포인트"]
     
     custom_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -95,20 +110,24 @@ def fetch_latest_headlines():
             entries_found = len(feed.entries)
             print(f"📡 Source {i} (RSS) checking: {entries_found} entries found.")
             
+            # [디버깅용] 각 소스의 가장 최신 기사 1개의 제목과 발행 시간 출력
+            if entries_found > 0:
+                first_entry = feed.entries[0]
+                first_pub = "No Date"
+                if hasattr(first_entry, 'published'):
+                    first_pub = first_entry.published
+                print(f"   🔝 Latest in Feed: [{first_pub}] {first_entry.title[:60]}...")
+
             for entry in feed.entries:
                 title_lower = entry.title.lower()
                 
-                # [블랙리스트 필터] 해설성 기사, 동향, 요약 기사는 무조건 스킵
+                # [블랙리스트 필터] 해설/칼럼은 스킵
                 if any(ex_kw in title_lower for ex_kw in EXCLUDE_KEYWORDS):
                     continue
 
-                # [강화된 필터 1] 
-                # 전략: 소스의 무조건 통과 특권을 없애고, 기사 제목에 반드시 '속보성 키워드' 또는 '핵심 지표'가 있어야만 AI에게 전달
-                is_breaking = any(kw in title_lower for kw in BREAKING_KEYWORDS)
-                is_indicator = any(ikw in title_lower for ikw in MARKET_INDICATORS)
-                
-                if not (is_breaking or is_indicator):
-                    continue
+                # ✅ [혁신 포인트] 기존의 '단어 기반 입구 컷' 삭제!
+                # "Breaking"이라는 단어가 없어도, 내용 자체가 충격적인 사건일 수 있으므로 
+                # 시간에만 맞으면 전부 AI에게 넘겨서 '문맥'으로 판단하게 만듭니다.
 
                 pub_datetime_utc = None
                 if hasattr(entry, 'published_parsed') and entry.published_parsed:
@@ -158,10 +177,8 @@ def fetch_latest_headlines():
                 if any(ex_kw in title_lower for ex_kw in EXCLUDE_KEYWORDS):
                     continue
 
-                # [필터 1] 네이버 뉴스: 속보 키워드나 주요 시장 지표/경제 단어가 하나라도 있으면 무조건 통과 (대폭 완화)
-                if not (any(kw in title_lower for kw in BREAKING_KEYWORDS) or any(ikw in title_lower for ikw in MARKET_INDICATORS)):
-                    # print(f"  ❌ Skip (No Keyword): {title[:50]}...")
-                    continue
+                # [필터 1] 네이버 뉴스: 기존 하드코딩 키워드 삭제 -> 무조건 통과시켜서 AI가 '문맥'으로 판단하게 함
+                # (단, 앞선 EXCLUDE_KEYWORDS에 해당하는 해설/칼럼은 이미 위에서 걸러짐)
 
                 base_link = "https://finance.naver.com" + subject_tag['href']
                 # 네이버 뉴스 링크를 PC/모바일 통합 링크(n.news.naver.com)로 변환 (모바일 접근성 및 PC 가용성 동시 해결)
