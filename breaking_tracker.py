@@ -33,36 +33,30 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # 감시할 뉴스 소스 (RSS) - 실시간 '속보' 전용 시스템으로 전면 교체
 RSS_FEEDS = [
-    # 1. MarketWatch MarketPulse (단신/수치 팩트 최강, 가장 빠름)
+    # 1. Reuters (via Google News) - 로이터 통신 (최근 1시간 내 구글에 인덱싱된 로이터 실시간 기사 우회 수집)
+    "https://news.google.com/rss/search?q=site:reuters.com+when:1h&hl=en-US&gl=US&ceid=US:en",
+
+    # 2. MarketWatch MarketPulse (단신/수치 팩트 최강, 해설 기사가 거의 없고 수치 위주의 가장 빠른 매체)
     "http://feeds.marketwatch.com/marketwatch/marketpulse/",
-    
-    # 2. CNBC Economy (미국 거시경제/지표/Fed 공신력 최고)
-    "https://www.cnbc.com/id/20910258/device/rss/rss.html",
 
-    # 3. Yahoo Finance (글로벌 증시 전반)
-    "https://finance.yahoo.com/news/rss",
-
-    # 4. Investing.com Breaking News
-    "https://www.investing.com/rss/news_285.rss",
-    
-    # 5. BBC News World (지정학적 리스크, 전쟁, 외교 속보)
-    "http://feeds.bbci.co.uk/news/world/rss.xml",
-
-    # 6. ForexLive (외환시장, 주요국 중앙은행 인사들의 실시간 발언, 거시경제 단신이 가장 빠름)
+    # 3. ForexLive (외환시장, 주요국 중앙은행 인사들의 실시간 발언, 거시경제 단신이 가장 빠름)
     "https://www.forexlive.com/feed/news",
 
-    # 7. Wall Street Journal Markets (월스트리트저널 글로벌 시장 동향, 공신력 최고 수준)
-    "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
+    # 4. FXStreet 실시간 경제 뉴스 (Trading Economics의 403 차단을 완전히 대체하는 가장 빠른 거시경제/외환 단신 매체)
+    "https://www.fxstreet.com/rss",
+
+    # 5. Investing.com Breaking News (순수 속보 채널)
+    "https://www.investing.com/rss/news_285.rss"
 ]
 
 # 메모리 상에서 이미 처리한 뉴스 제목 저장 (중복 방지 및 메모리 효율화)
 processed_news = deque(maxlen=500)
 
 
-def is_already_saved(title):
-    """DB에 이미 해당 제목의 속보가 있는지 확인합니다."""
+def is_already_saved(url):
+    """DB에 이미 해당 URL의 속보가 있는지 확인합니다."""
     try:
-        res = supabase.table("breaking_news").select("id").eq("title", title).execute()
+        res = supabase.table("breaking_news").select("id").eq("original_url", url).execute()
         return len(res.data) > 0
     except Exception as e:
         print(f"Error checking duplicate in DB: {e}")
@@ -84,10 +78,13 @@ def fetch_latest_headlines():
     now_utc = datetime.now(timezone.utc)
     time_limit_utc = now_utc - timedelta(minutes=30)
     
-    # 속보를 나타내는 핵심 키워드 (입구 컷용) - 기사 포함율을 높이기 위해 완화된 키워드 대거 추가
-    BREAKING_KEYWORDS = ["속보", "breaking", "urgent", "just in", "alert", "flash", "급보", "공시", "[특징주]", "exclusive", "scoop", "단독", "급등", "급락", "최고", "최저", "돌파", "붕괴", "surges", "jumps", "plunges", "soars", "tumbles", "rises", "falls", "drops", "hits", "상승", "하락", "폭등", "폭락", "강세", "약세", "마감"]
-    # 숫자가 포함되거나 핵심 경제 지표인 경우 단어에 상관없이 AI에게 전달할 '관심 키워드'
-    MARKET_INDICATORS = ["cpi", "pce", "fomc", "fed", "nasdaq", "kospi", "earnings", "surprise", "cuts", "hikes", "gdp", "nfp", "nvidia", "samsung", "apple", "tesla", "bitcoin", "비트코인", "금리", "환율", "유가", "실적", "인플레이션", "지수", "증시", "주가", "달러", "국채", "수주", "매출"]
+    # 속보를 나타내는 핵심 키워드 (입구 컷용) - '단독', '속보', '폭등락' 등 확실한 시그널 위주로 엄격하게 재강화
+    BREAKING_KEYWORDS = ["속보", "breaking", "urgent", "just in", "alert", "flash", "급보", "공시", "[특징주]", "exclusive", "scoop", "단독", "급등", "급락", "폭등", "폭락", "surges", "plunges", "soars", "tumbles"]
+    # 숫자가 포함되거나 핵심 경제 지표인 경우 단어에 상관없이 AI에게 전달할 '관심 키워드' (최중요 지표/대장주로 압축)
+    MARKET_INDICATORS = ["cpi", "pce", "fomc", "fed", "nasdaq", "kospi", "earnings", "surprise", "cuts", "hikes", "gdp", "nfp", "nvidia", "samsung", "apple", "tesla", "bitcoin", "금리", "환율", "인플레이션", "지수"]
+    
+    # ❌ 절대 통과시키지 않을 '해설/요약/전망' 키워드 (블랙리스트)
+    EXCLUDE_KEYWORDS = ["전망", "동향", "분석", "마감", "주목할", "이유는", "요약", "정리", "wrap", "recap", "preview", "takeaways", "opinion", "why", "snapshot", "roundup", "should you buy", "what to watch", "칼럼", "포인트"]
     
     custom_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     
@@ -101,13 +98,16 @@ def fetch_latest_headlines():
             for entry in feed.entries:
                 title_lower = entry.title.lower()
                 
+                # [블랙리스트 필터] 해설성 기사, 동향, 요약 기사는 무조건 스킵
+                if any(ex_kw in title_lower for ex_kw in EXCLUDE_KEYWORDS):
+                    continue
+
                 # [강화된 필터 1] 
-                # 전략: 고품질 소스(Source 1, 2, 5, 6, 7, 8)이거나, 속보 키워드가 있거나, 시장 핵심 지표가 포함된 경우만 선별
+                # 전략: 소스의 무조건 통과 특권을 없애고, 기사 제목에 반드시 '속보성 키워드' 또는 '핵심 지표'가 있어야만 AI에게 전달
                 is_breaking = any(kw in title_lower for kw in BREAKING_KEYWORDS)
                 is_indicator = any(ikw in title_lower for ikw in MARKET_INDICATORS)
-                is_trusted_source = i in [1, 2, 5, 6, 7, 8] # MarketWatch, CNBC, BBC, TE, ForexLive, WSJ는 무조건 검토
                 
-                if not (is_breaking or is_indicator or is_trusted_source):
+                if not (is_breaking or is_indicator):
                     continue
 
                 pub_datetime_utc = None
@@ -153,6 +153,10 @@ def fetch_latest_headlines():
             if subject_tag and wdate_tag:
                 title = subject_tag.text.strip()
                 title_lower = title.lower()
+
+                # [블랙리스트 필터] 해설성 기사, 동향, 요약 기사는 무조건 스킵
+                if any(ex_kw in title_lower for ex_kw in EXCLUDE_KEYWORDS):
+                    continue
 
                 # [필터 1] 네이버 뉴스: 속보 키워드나 주요 시장 지표/경제 단어가 하나라도 있으면 무조건 통과 (대폭 완화)
                 if not (any(kw in title_lower for kw in BREAKING_KEYWORDS) or any(ikw in title_lower for ikw in MARKET_INDICATORS)):
@@ -212,28 +216,30 @@ def filter_breaking_news(headlines, recent_titles):
     prompt = f"""
     당신은 글로벌 경제 및 증시 트렌드를 발빠르게 전달하는 수석 에디터입니다.
     현재 수집된 뉴스 목록에서 '시장의 흐름을 파악하는 데 도움이 되는 유의미한 뉴스'들을 선별해주세요.
-    너무 문턱을 높이지 말고, 특정 종목의 급등락이나 거시 경제의 방향성을 보여주는 소식이라면 적극적으로 선택하세요.
-
+    
     [후보 뉴스 리스트]
     {json.dumps(headlines_with_id, ensure_ascii=False)}
 
     [최근 보도된 속보 (중복 금지)]
     {json.dumps(recent_titles, ensure_ascii=False)}
 
-    [완화된 선별 기준]
-    1. **필터링 대상 (Skip)**: 광고, 단순 홍보성 기사, 어제와 똑같은 내용의 재탕 시황.
-    2. **적극 포함 대상 (Include)**:
-       - 주요 경제지표 및 중앙은행 인사들의 발언.
-       - 주요 기업(크기 불문, 시장 관심도가 높은 기업)의 실적, M&A, 신제품 발표, 대규모 수주.
-       - 원자재(유가, 금) 및 암호화폐(비트코인 등)의 의미 있는 가격 변동.
-       - 외교, 전쟁 등 거시적 환경에 영향을 미치는 국제 뉴스.
-    3. **무게감 판단**: '투자자가 오늘 하루 시장 분위기와 개별 종목의 흐름을 파악하기 위해 알아야 할 소식인가?'를 기준으로 넓게 수용하세요.
-    4. **팩트 중심**: 미사여구보다는 구체적인 숫자나 팩트가 포함된 정보를 선호합니다.
+    [엄격한 '단일 사건' 선별 기준 - 동향 분석 절대 금지]
+    아무리 30분 이내에 올라온 기사라도, 이미 일어난 일을 설명하거나 풀이하는 '해설 기사'는 철저하게 걸러내야 합니다. 오직 방금 발생한 '새로운 팩트(New Fact)'가 발생한 기사만 선별하세요.
+    0. **중복 완벽 차단 (최우선)**: 위에 제공된 [최근 보도된 속보] 목록을 반드시 읽으세요. 다른 언론사가 썼거나 제목이 달라도, **이미 보도된 속보와 '동일한 사건(원인/결과)'**이라면 절대 중복해서 내보내지 말고 **무조건 버리세요.**
+    1. **필터링 대상 (무조건 Skip)**: 
+       - "증시 마감 요약", "주간 동향", "오늘의 시장 정리(Wrap-up)", "경제 지표 프리뷰(Preview)"
+       - "테슬라 주가가 급락한 3가지 이유", "향후 전망과 분석(Opinion/Analysis)", "전문가 칼럼" 등.
+    2. **적극 포함 대상 (Include - 사건/지표 중심)**:
+       - 막 발표된 경제 지표 결과치 (예: "미국 1월 CPI 3.1% 발표")
+       - 실시간 금리 발표, 기업의 실적 발표, 기업 인수합병(M&A), 깜짝 수주 및 공시
+       - 전쟁 발발, 대규모 군사 타격(공습, 미사일), 주요국 지도자의 긴급 발표 등 시장(유가/증시)에 즉각적 충격을 주는 **초긴급 지정학적 속보 (최우선 포함)**
+       - 제목에 'Breaking', 'Urgent', '단독', '속보'가 포함된 명백한 "신규 발생 사건"
+    3. **무게감 판단**: '이 기사는 기자가 자기 의견을 쓴 것인가(X), 아니면 방금 세계 어딘가에서 새로운 데이터나 결과, 물리적 타격(이벤트)이 발생했는가(O)?'를 기준으로 삼으세요. 
 
     [출력 형식]
     - 반드시 JSON 리스트 형식으로만 답변하세요. 
-    - 정보 가치가 아예 없는 낚시성 기사, 광고, 중복 기사인 경우에만 빈 리스트 []를 반환하세요.
-    - 중요도(importance_score): 기사의 파급력에 따라 1~10점으로 부여하세요. (조금이라도 시장 파악에 도움이 된다면 4점 이상을 주어 하루 최소 10건 이상 통과되도록 적극적으로 승인하세요)
+    - 해설성/요약성/전망 기사는 하나도 빠짐없이 전부 버리고([] 반환), 명백한 '단독(Exclusive)', '긴급 속보(Urgent/Breaking)'(전쟁/테러 포함), '주요 지표/실적 발표'에 해당하는 경우에만 JSON 객체를 만드세요.
+    - 중요도(importance_score): 기사의 파급력에 따라 1~10점으로 부여하되, '오직 새로운 사건이자 당장 알아야 할 긴급 팩트'인 경우에만 6점 이상을 주어 엄격하게 승인하세요.
     - temp_id: [후보 뉴스 리스트]에서 해당 뉴스의 temp_id를 그대로 가져오세요.
     - title: 한국어로 15자 이내, 제목만 보고도 상황이 파악되게 명확하게. 문장 끝에 문장에 어울리는 이모지 하나 추가.
     - content: 수치나 핵심 팩트를 포함하여 1~2문장으로 압축.
@@ -331,8 +337,8 @@ def perform_deep_analysis(candidates):
             [기사 본문]: {full_text[:3000]} 
 
             [작성 가이드라인]
-            - **수치 강조**: 본문에 포함된 구체적인 퍼센트(%), 금액($), 포인트(p/bp), 예상치 대비 상회/하회 여부를 반드시 포함하세요.
-            - **정확도**: 본문 내용과 제목이 다르거나 낚시성 기사라면 과감히 빈 객체 {{}}를 반환하세요.
+            - **수치 및 팩트 강조**: 경제 지표/실적 기사인 경우 퍼센트(%), 금액($), 포인트(p/bp) 등 수치를 반드시 포함하세요. 단, **전쟁, 공습, 테러, 지정학적 충돌** 같은 사건의 경우 수치 대신 타격 위치, 사상자, 지도자의 발언 등 **결정적인 '물리적 팩트'**를 명시하세요.
+            - **정확도**: 기사 내용이 제목과 완전히 다르거나 무관한 낚시성 기사일 경우에만 과감히 빈 객체를 반환하세요. 진짜 발생한 속보/사건이라면 **절대 빈 객체를 반환하지 마세요.**
             - **품격**: 블룸버그/로이터 속보 톤앤매너를 유지하세요.
 
             [출력 형식 (JSON 하나만 출력)]
@@ -385,7 +391,7 @@ def save_and_notify(news_item):
             return
 
         # 중복 체크 (DB 최종 확인)
-        if is_already_saved(title):
+        if is_already_saved(url):
             print(f"Skipping duplicate: {title}")
             return
 
@@ -436,12 +442,13 @@ def main():
             new_headlines = []
             for h in raw_headlines:
                 title = h['title']
-                if title not in processed_news:
-                    if not is_already_saved(title):
+                link = h.get('link', '')
+                if link not in processed_news:
+                    if not is_already_saved(link):
                         new_headlines.append(h)
                     else:
                         print(f"  ⏭️ Skip (Already in DB): {title[:50]}...")
-                    processed_news.append(title)  # deque는 자동으로 오래된 요소 제거
+                    processed_news.append(link)  # deque는 자동으로 오래된 요소 제거
                 else:
                     # print(f"  ⏭️ Skip (Memory): {title[:50]}...")
                     pass
@@ -469,7 +476,7 @@ def main():
                 print("💤 No new headlines to analyze.")
             
             # 6. 주기 설정 (120초 - 2분마다 체크 추천, 현재는 180초)
-            time.sleep(180)
+            time.sleep(120)
             
         except KeyboardInterrupt:
             print("Tracker stopped by user.")
