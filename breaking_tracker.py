@@ -443,7 +443,7 @@ def save_and_notify(news_item):
         if score >= 9:
             prefix = "🚨[초긴급]"
         elif score >= 8:
-            prefix = "🔥[중요]"
+            prefix = "[속보]"
         
         send_push_notification(
             title=f"{prefix} {title}",
