@@ -74,8 +74,8 @@ def send_push_notification(title, body, url="/", category=None):
 
             # 에티켓 모드가 켜져 있고 현재가 밤 시간대인 경우
             if etiquette_enabled and quiet_mode:
-                if category == "breaking_news":
-                    print(f"에티켓 모드: 속보 알림 전송 안 함 (ID: {sub_record['id']})")
+                if category in ["breaking_news", "important_breaking_news"]:
+                    print(f"에티켓 모드: 속보 알림( {category} ) 전송 안 함 (ID: {sub_record['id']})")
                     continue
                 else:
                     supabase.table("notification_queue").insert([{
