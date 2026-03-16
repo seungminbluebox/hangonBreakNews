@@ -423,25 +423,30 @@ def save_and_notify(news_item):
             "original_url": url
         }
         
-
         supabase.table("breaking_news").insert(data).execute()
-        print(f"🚀 New Breaking News Saved: {title}")
+        print(f"🚀 New Breaking News Saved: {title} (Score: {score})")
         
         # On-Demand Revalidation
         revalidate_path("/live")
         revalidate_path("/") # 메인 페이지 마켓 티커 등 업데이트용
 
+        # 2. 실시간 푸시 알림 (중요도에 따른 카테고리 분기)
+        # score >= 8: 중요 속보 (important_breaking_news)
+        # score < 8: 일반 속보 (breaking_news)
+        notification_category = "important_breaking_news" if score >= 8 else "breaking_news"
+        
         # 중요도에 따른 접두어 및 강조
         prefix = "[속보]"
         if score >= 9:
             prefix = "🚨[초긴급]"
+        elif score >= 8:
+            prefix = "🔥[중요]"
         
-        # 2. 실시간 푸시 알림 (카테고리: breaking_news)
         send_push_notification(
             title=f"{prefix} {title}",
             body=content,
             url="/live", # 속보 타임라인 전용 페이지로 링크
-            category="breaking_news"
+            category=notification_category
         )
     except Exception as e:
         print(f"Error in save_and_notify: {e}")
