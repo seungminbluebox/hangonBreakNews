@@ -72,16 +72,20 @@ def send_push_notification(title, body, url="/", category=None):
             prefs = sub_record.get("preferences", {})
             etiquette_enabled = prefs.get("etiquette_mode", False)
 
-            # 에티켓 모드가 켜져 있고 현재가 밤 시간대라면 큐에 저장
+            # 에티켓 모드가 켜져 있고 현재가 밤 시간대인 경우
             if etiquette_enabled and quiet_mode:
-                supabase.table("notification_queue").insert([{
-                    "subscription_id": sub_record["id"],
-                    "title": title,
-                    "body": body,
-                    "url": url
-                }]).execute()
-                print(f"에티켓 모드: 알림 보류 및 큐 저장 (ID: {sub_record['id']})")
-                continue
+                if category == "breaking_news":
+                    print(f"에티켓 모드: 속보 알림 전송 안 함 (ID: {sub_record['id']})")
+                    continue
+                else:
+                    supabase.table("notification_queue").insert([{
+                        "subscription_id": sub_record["id"],
+                        "title": title,
+                        "body": body,
+                        "url": url
+                    }]).execute()
+                    print(f"에티켓 모드: 알림 보류 및 큐 저장 (ID: {sub_record['id']})")
+                    continue
 
             subscription_info = sub_record["subscription"]
             
