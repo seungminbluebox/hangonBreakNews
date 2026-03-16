@@ -256,7 +256,7 @@ def filter_breaking_news(headlines, recent_titles):
     [출력 형식]
     - 반드시 JSON 리스트 형식으로만 답변하세요. 
     - 해설성/요약성/전망 기사는 하나도 빠짐없이 전부 버리고([] 반환), 명백한 '단독(Exclusive)', '긴급 속보(Urgent/Breaking)'(전쟁/테러 포함), '주요 지표/실적 발표'에 해당하는 경우에만 JSON 객체를 만드세요.
-    - 중요도(importance_score): 기사의 파급력에 따라 1~10점으로 부여하되, '오직 새로운 사건이자 당장 알아야 할 긴급 팩트'인 경우에만 6점 이상을 주어 엄격하게 승인하세요.
+    - 중요도(importance_score): 기사의 파급력에 따라 1~10점으로 부여하되, '오직 새로운 사건이자 당장 알아야 할 긴급 팩트'인 경우에만 7점 이상을 주어 엄격하게 승인하세요.
     - temp_id: [후보 뉴스 리스트]에서 해당 뉴스의 temp_id를 그대로 가져오세요.
     - title: 한국어로 15자 이내, 제목만 보고도 상황이 파악되게 명확하게. 문장 끝에 문장에 어울리는 이모지 하나 추가.
     - content: 수치나 핵심 팩트를 포함하여 1~2문장으로 압축.
@@ -404,7 +404,9 @@ def save_and_notify(news_item):
         url = news_item.get('original_url', '')
         top_image_url = news_item.get('image_url')
 
-        if not title:
+        if not title or score < 7:
+            if title:
+                print(f"  Filtered out by score ({score}): {title[:50]}...")
             return
 
         # 중복 체크 (DB 최종 확인)
