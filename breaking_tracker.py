@@ -64,7 +64,10 @@ RSS_FEEDS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
 
     # 11. TheStreet (미국 주식 개별 종목, 단독 특징주 및 시장 모멘텀 보완)
-    "https://www.thestreet.com/.rss/full/"
+    "https://www.thestreet.com/.rss/full/",
+    
+    # 12. Cointelegraph (가장 빠르고 굵직한 글로벌 암호화폐 전용 실시간 속보 매체)
+    "https://cointelegraph.com/rss"
 ]
 
 # 메모리 상에서 이미 처리한 뉴스 제목 저장 (중복 방지 및 메모리 효율화)
