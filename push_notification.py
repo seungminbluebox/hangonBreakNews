@@ -24,7 +24,10 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # Firebase Admin SDK 초기화 (앱이 아직 초기화되지 않았을 때만)
 if not firebase_admin._apps:
+    print(f"[DEBUG] Firebase 초기화 시도 중... (현재 작업 디렉토리: {os.getcwd()})")
     try:
+        firebase_credentials_env = os.getenv("FIREBASE_CREDENTIALS")
+        
         # 실제 파일명 상수로 정의
         FIREBASE_KEY_FILENAME = 'hangonalarm-firebase-adminsdk-fbsvc-a0ddf6e01d.json'
         
@@ -38,14 +41,23 @@ if not firebase_admin._apps:
             if os.path.exists(fallback_path):
                 key_path = fallback_path
 
-        if os.path.exists(key_path):
+        if firebase_credentials_env:
+            # 환경변수에서 JSON 로드 (우선순위 1)
+            print("[DEBUG] 환경변수 FIREBASE_CREDENTIALS를 발견했습니다. 파싱 시도...")
+            cred_dict = json.loads(firebase_credentials_env)
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
+            print("✅ Firebase Admin 초기화 성공! (환경변수 FIREBASE_CREDENTIALS 사용)")
+        elif os.path.exists(key_path):
+            # 파일에서 로드 (우선순위 2)
+            print(f"[DEBUG] JSON 키 파일을 발견했습니다: {key_path}")
             cred = credentials.Certificate(key_path)
             firebase_admin.initialize_app(cred)
-            print(f"Firebase Admin 초기화 성공! (경로: {key_path})")
+            print(f"✅ Firebase Admin 초기화 성공! (경로: {key_path})")
         else:
-            print(f"경고: {FIREBASE_KEY_FILENAME} 파일을 찾을 수 없습니다. FCM(Firebase) 전송은 실패할 수 있습니다.")
+            print(f"❌ 오류: FIREBASE_CREDENTIALS 환경변수도 없고, {FIREBASE_KEY_FILENAME} 파일도 찾을 수 없습니다.")
     except Exception as e:
-        print(f"Firebase Admin 초기화 실패: {e}")
+        print(f"❌ Firebase Admin 초기화 실패 상세 에러: {e}")
 
 def is_quiet_time():
     """현재 한국 시간(KST)이 에티켓 시간(00:00~09:00)인지 확인"""
