@@ -165,7 +165,15 @@ def send_push_notification(title, body, url="/", category=None):
                     "icon": "/icon-192.png",
                     "badge": "/badge-72x72.png",
                     "tag": notification_tag
-                }
+                },
+                android=messaging.AndroidConfig(
+                    priority='high'
+                ),
+                webpush=messaging.WebpushConfig(
+                    headers={
+                        "Urgency": "high"
+                    }
+                )
             )
             
             try:
