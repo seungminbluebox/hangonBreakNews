@@ -85,9 +85,9 @@ def is_already_saved(url):
 
 
 def get_recent_news_titles():
-    """DB에서 최근 20개의 속보 제목을 가져옵니다."""
+    """DB에서 최근 50개의 속보 제목을 가져옵니다."""
     try:
-        res = supabase.table("breaking_news").select("title").order("created_at", desc=True).limit(20).execute()
+        res = supabase.table("breaking_news").select("title").order("created_at", desc=True).limit(50).execute()
         return [item['title'] for item in res.data]
     except Exception as e:
         print(f"Error fetching recent titles: {e}")
