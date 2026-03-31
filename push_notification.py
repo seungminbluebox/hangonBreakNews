@@ -106,40 +106,23 @@ def send_push_notification(title, body, url="/", category=None):
     # 1. 모든 유저 정보 순회 (에티켓 모드 확인 및 토큰 추출)
     for sub_record in subscriptions:
         try:
+            fcm_token = sub_record.get("fcm_token")
             prefs = sub_record.get("preferences", {})
             etiquette_enabled = prefs.get("etiquette_mode", False)
 
-            # 에티켓 모드가 켜져 있고 현재가 밤 시간대인 경우
+            # 에티켓 모드가 켜져 있고 현재가 밤 시간대인 경우, 속보 알림은 큐에 저장하지 않고 조용히 취소(무시)합니다.
             if etiquette_enabled and quiet_mode:
                 if category in ["breaking_news", "important_breaking_news"]:
                     print(f"에티켓 모드: 속보 알림( {category} ) 전송 안 함 (ID: {sub_record['id']})")
                     continue
-                else:
-                    queue_inserts.append({
-                        "subscription_id": sub_record["id"],
-                        "title": title,
-                        "body": body,
-                        "url": url,
-                        "is_fcm": True # fcm 유저임을 표시
-                    })
-                    print(f"에티켓 모드: 알림 보류 및 큐 저장 (ID: {sub_record['id']})")
-                    continue
 
-            fcm_token = sub_record.get("fcm_token")
+            # 전송 대상에 포함
             if fcm_token:
                 fcm_tokens_to_send.append(fcm_token)
                 fcm_token_to_id_map[fcm_token] = sub_record["id"]
 
         except Exception as e:
             print(f"유저 데이터 필터링 중 에러 (ID: {sub_record.get('id')}): {e}")
-
-    # 큐에 저장할 알림들 일괄 저장
-    if queue_inserts:
-        try:
-            supabase.table("notification_queue").insert(queue_inserts).execute()
-            print(f"{len(queue_inserts)}건의 알림이 에티켓 모드로 인해 큐에 저장되었습니다.")
-        except Exception as e:
-            print(f"알림 큐 저장 중 에러 발생: {e}")
 
     # 2. Firebase Cloud Messaging(FCM)을 통한 초고속 대량 발송 (Multicast)
     if fcm_tokens_to_send:

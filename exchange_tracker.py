@@ -43,27 +43,39 @@ class ExchangeMonitor:
         if current_price is None:
             return
 
-        # 1. 날짜가 바뀌었거나 오전 9시 정각에 기준가 및 이력 초기화
-        if (self.last_notified_date != today) or (now.hour == self.REFERENCE_HOUR and now.minute == 0):
-            if self.daily_base_price != current_price:
+        # 1. 9시 기준가 및 알림 기록 초기화 (자정 대신 오전 9시에만 초기화)
+        # 9시 0분 0초~59초 사이에 단 한 번만 실행되도록 보장
+        if now.hour == self.REFERENCE_HOUR and now.minute == 0:
+            if self.last_notified_date != today: # 오늘 아직 9시 초기화 전이라면
                 self.daily_base_price = current_price
-                self.notified_steps.clear() # 날짜가 바뀌거나 9시가 되면 알림 기록 초기화
+                self.notified_steps.clear() 
                 self.last_notified_date = today
                 print(f"🌅 [{now.strftime('%H:%M:%S')}] 오늘의 9시 기준환율 설정 및 기록 초기화: {self.daily_base_price:.2f}원")
+                return # 초기화 직후에는 알림 체크 건너뜀 (변동폭이 0이므로)
 
-        # 기준가가 아직 설정되지 않은 경우 (프로그램 첫 실행 시)
+        # 프로그램 첫 실행 시 기준가 설정
         if self.daily_base_price is None:
             self.daily_base_price = current_price
-            self.last_notified_date = today
+            self.last_notified_date = today # 초기 실행 시점의 날짜 기록
+            
+            # [수정] 첫 실행 시 현재 가격을 기준으로 모든 '현재 상태'의 단계를 이미 알림한 것으로 간주
+            # 이렇게 하면 시작하자마자 알림이 오는 것을 방지할 수 있습니다.
+            diff = current_price - self.daily_base_price
+            current_step = int(diff // self.STEP_UNIT)
+            if current_step != 0:
+                self.notified_steps.add(current_step)
+                
             print(f"📌 모니터링 시작 (현재 기준가: {self.daily_base_price:.2f}원)")
+            return # 첫 실행 시에는 설정만 하고 다음 턴부터 체크
 
         # 2. 변동 폭 및 단계(Step) 계산
         diff = current_price - self.daily_base_price
-        # 상승은 양의 정수(1, 2, ...), 하락은 음의 정수(-1, -2, ...)
+        # int(diff // 10) 방식은 양수/음수 단계 구분에 효과적임
         current_step = int(diff // self.STEP_UNIT)
         
         # 0단계(10원 미만 변동)는 무시
         if current_step == 0:
+            print(f"[{now.strftime('%H:%M:%S')}] 현재: {current_price:.2f}원 (변동: {diff:+.1f}원)")
             return
 
         # 3. 알림 중복 체크 (Set 활용)
