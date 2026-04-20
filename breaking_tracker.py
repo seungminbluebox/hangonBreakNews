@@ -31,15 +31,23 @@ genai.configure(api_key=GOOGLE_API_KEY)
 model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def safe_generate_content(model_instance, prompt_text, max_retries=3):
-    """429 에러 방어를 위한 안전한 Gemini API 호출 함수"""
+import random
+
+def safe_generate_content(model_instance, prompt_text, is_tracker=True, max_retries=5):
+    """429 에러 방어를 위한 안전한 Gemini API 호출 함수 (속보 트래커 특화)"""
     for attempt in range(max_retries):
         try:
             return model_instance.generate_content(prompt_text)
         except Exception as e:
             error_msg = str(e)
             if "429" in error_msg or "Too Many" in error_msg or "Quota" in error_msg or "Resource" in error_msg:
-                wait_time = (attempt + 1) * 10
+                if is_tracker:
+                    # 속보 트래커: 5초, 10초 대기 후 빠르게 새치기 재시도
+                    wait_time = (attempt + 1) * 5
+                else:
+                    # 크론 백엔드용: 30초, 60초 대기 + Jitter 난수로 충돌 방지 
+                    wait_time = (attempt + 1) * 30 + random.randint(1, 10)
+                    
                 print(f"⚠️ [429 Error] {wait_time}초 대기 후 API 재시도 중... (시도 {attempt+1}/{max_retries})")
                 time.sleep(wait_time)
             else:
