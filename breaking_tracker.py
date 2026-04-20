@@ -19,40 +19,54 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from push_notification import send_push_notification
 from revalidate import revalidate_path
 
+import random
+
 load_dotenv()
 
 # 환경 변수 및 설정
-GEMINI_MODEL_NAME= os.getenv("GEMINI_MODEL_NAME", "gemini-3-flash-preview")
-GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL_NAME= os.getenv("GEMINI_MODEL_NAME", "gemini-3.1-flash-lite-preview")
+API_KEYS = [
+    os.getenv("GEMINI_API_KEY_1"),
+    os.getenv("GEMINI_API_KEY_2"),
+    os.getenv("GEMINI_API_KEY_3")
+]
+# None 값이 섞이는 것을 방지
+API_KEYS = [k for k in API_KEYS if k]
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 import random
 
-def safe_generate_content(model_instance, prompt_text, is_tracker=True, max_retries=5):
-    """429 에러 방어를 위한 안전한 Gemini API 호출 함수 (속보 트래커 특화)"""
+# 라운드 로빈(순차 교환) API 키 사용을 위한 전역 상태 변수
+current_api_key_idx = 0
+
+def safe_generate_content(prompt_text, max_retries=5):
+    global current_api_key_idx
+    """429 에러 및 한도 문제 방어를 위해 여러 API 키를 번갈아 사용하는 함수"""
     for attempt in range(max_retries):
+        # 매 시도마다 사용할 API 키 순차 선택 (1->2->3->1...)
+        current_key = API_KEYS[current_api_key_idx]
+        current_api_key_idx = (current_api_key_idx + 1) % len(API_KEYS)
+        
+        genai.configure(api_key=current_key)
+        
+        # 모델 생성을 시도할 때마다 새로 인스턴스화
+        temp_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+        
         try:
-            return model_instance.generate_content(prompt_text)
+            return temp_model.generate_content(prompt_text)
         except Exception as e:
             error_msg = str(e)
             if "429" in error_msg or "Too Many" in error_msg or "Quota" in error_msg or "Resource" in error_msg:
-                if is_tracker:
-                    # 속보 트래커: 5초, 10초 대기 후 빠르게 새치기 재시도
-                    wait_time = (attempt + 1) * 5
-                else:
-                    # 크론 백엔드용: 30초, 60초 대기 + Jitter 난수로 충돌 방지 
-                    wait_time = (attempt + 1) * 30 + random.randint(1, 10)
-                    
-                print(f"⚠️ [429 Error] {wait_time}초 대기 후 API 재시도 중... (시도 {attempt+1}/{max_retries})")
+                wait_time = (attempt + 1) * 5
+                print(f"⚠️ [429 Error/Rate Limit] 키 번갈아가며 {wait_time}초 대기 후 API 재시도 중... (시도 {attempt+1}/{max_retries})")
                 time.sleep(wait_time)
             else:
                 raise e
-    print("🚨 최대 재시도 횟수를 초과했습니다. 이번 요청은 건너뜁니다.")
+    print("🚨 최대 재시도 횟수를 초과했습니다. 모든 API 키가 한도 초과 상태일 수 있습니다.")
     return None
 
 # 감시할 뉴스 소스 (RSS) - 실시간 '속보' 전용 시스템으로 전면 교체
@@ -291,7 +305,7 @@ def filter_breaking_news(headlines, recent_titles):
     """
 
     try:
-        response = safe_generate_content(model, prompt)
+        response = safe_generate_content(prompt)
         if not response:
             return []
         text = response.text
@@ -365,7 +379,7 @@ def perform_deep_analysis(candidates):
                 - 블룸버그/로이터 뉴스 톤앤매너를 유지하세요.
                 """
                 try:
-                    fb_response = safe_generate_content(model, fallback_prompt)
+                    fb_response = safe_generate_content(fallback_prompt)
                     if fb_response:
                         item['content'] = fb_response.text.strip()
                     else:
@@ -402,7 +416,7 @@ def perform_deep_analysis(candidates):
             }}
             """
             
-            response = safe_generate_content(model, prompt)
+            response = safe_generate_content(prompt)
             if not response:
                 # API 호출 완전 실패 시 해당 기사는 다음 기회를 위해 스킵하거나 기본값 처리
                 time.sleep(4)
