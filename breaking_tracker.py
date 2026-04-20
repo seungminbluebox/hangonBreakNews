@@ -341,18 +341,22 @@ def filter_breaking_news(headlines, recent_titles):
 
 def perform_deep_analysis(candidates):
     """
-    선별된 뉴스 후보들의 본문을 직접 읽고, 
-    수치 검증 및 상세 분석을 통해 최종 뉴스 데이터를 생성합니다.
+    선별된 뉴스 후보들의 본문을 직접 읽고,
+    수치 검증 및 상세 분석을 통해 묶어서(Batch) 최종 뉴스 데이터를 생성합니다.
     """
-    refined_items = []
+    if not candidates:
+        return []
+
+    batch_input = []
     
-    for item in candidates:
+    # 1. Newspaper3k로 병렬(동기는 순차) 다운로드 및 파싱
+    for idx, item in enumerate(candidates):
         url = item.get('original_url')
         if not url:
             continue
-            
+
         try:
-            # 1. 본문 추출
+            from newspaper import Config, Article
             config = Config()
             config.browser_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             config.request_timeout = 10
@@ -363,89 +367,94 @@ def perform_deep_analysis(candidates):
             full_text = article.text
             top_image = article.top_image
             
-            if len(full_text) < 100: # 본문이 너무 적으면 패스하거나 제목 기반 유지
-                print(f"⚠️ Text too short for {item['title']}, generating rich content from title.")
-                # 본문이 짧을 경우 제목을 바탕으로 상세 내용을 추론하여 생성하도록 프롬프트 강화
-                fallback_prompt = f"""
-                당신은 경제 전문 에디터입니다. 다음의 '짧은 속보 제목'을 바탕으로, 
-                독자가 상황을 충분히 파악할 수 있도록 팩트 중심의 상세 문장(50자~100자 사이)을 생성해주세요.
-                
-                [기사 제목]: {item['title']}
-                
-                [지시사항]
-                - 제목에 담긴 핵심 사건(유가 변동, 증시 출발 등)을 풀어서 설명하세요.
-                - 절대 '본문이 없다'는 식의 무책임한 말은 하지 마세요.
-                - 반드시 30자 이상의 완성된 문장으로 작성하세요.
-                - 블룸버그/로이터 뉴스 톤앤매너를 유지하세요.
-                """
-                try:
-                    fb_response = safe_generate_content(fallback_prompt)
-                    if fb_response:
-                        item['content'] = fb_response.text.strip()
-                    else:
-                        item['content'] = f"{item['title']} 관련 긴급 시장 상황이 발생했습니다. 자세한 내용은 원본 기사를 참조하시기 바랍니다."
-                except:
-                    item['content'] = f"{item['title']} 관련 긴급 시장 상황이 발생했습니다. 자세한 내용은 원본 기사를 참조하시기 바랍니다."
-                
-                item['image_url'] = top_image
-                refined_items.append(item)
-                
-                # RPM 분산을 위한 쿨타임 주입 (1분 15회 제한 고려)
-                time.sleep(4)
-                continue
-
-            # 2. 본문 기반 AI 재심사 및 요약
-            prompt = f"""
-            당신은 세계 최고의 경제 전문 팩트체커입니다. 
-            다음 기사의 본문을 읽고, 제목에서 파악되지 않은 '구체적인 수치'와 '핵심 맥락'을 포함하여 내용을 정교하게 다듬어주세요.
-
-            [기사 제목]: {item['title']}
-            [기사 본문]: {full_text[:3000]} 
-
-            [작성 가이드라인]
-            - **수치 및 팩트 강조**: 경제 지표/실적 기사인 경우 퍼센트(%), 금액($), 포인트(p/bp) 등 수치를 반드시 포함하세요. 단, **전쟁, 공습, 테러, 지정학적 충돌** 같은 사건의 경우 수치 대신 타격 위치, 사상자, 지도자의 발언 등 **결정적인 '물리적 팩트'**를 명시하세요.
-            - **정확도**: 기사 내용이 제목과 완전히 다르거나 무관한 낚시성 기사일 경우에만 과감히 빈 객체를 반환하세요. 진짜 발생한 속보/사건이라면 **절대 빈 객체를 반환하지 마세요.**
-            - **품격**: 블룸버그/로이터 속보 톤앤매너를 유지하세요.
-
-            [출력 형식 (JSON 하나만 출력)]
-            {{
-                "title": "한국어 15자 이내 (이모지 포함)",
-                "content": "본문의 핵심 수치가 포함된 1~2문장 요약(110자 이내)",
-                "importance_score": 7~10점 사이 점수,
-                "category": "market/indicator/geopolitics/corporate 중 선택"
-            }}
-            """
-            
-            response = safe_generate_content(prompt)
-            if not response:
-                # API 호출 완전 실패 시 해당 기사는 다음 기회를 위해 스킵하거나 기본값 처리
-                time.sleep(4)
-                continue
-                
-            text = response.text
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0]
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0]
-            
-            refined_data = json.loads(text.strip())
-            if refined_data and refined_data.get('title'):
-                # 원본 URL을 AI 출력물이 아닌, 기존 코드에서 유지하던 데이터로 강제 할당 (보보 안전성)
-                refined_data['original_url'] = url
-                refined_data['image_url'] = top_image
-                refined_items.append(refined_data)
-                print(f"  ✨ Deep Analysis Success: {refined_data['title']}")
+            # 본문이 너무 짧은 경우 예외 처리용 텍스트 삽입
+            if len(full_text) < 100:
+                print(f"⚠️ Text too short for {item['title'][:30]}..., marking for title-based generation.")
+                content_to_analyze = "TEXT_TOO_SHORT"
             else:
-                print(f"  🗑️ Deep Analysis Rejected (AI): {item['title'][:50]}...")
-                
+                content_to_analyze = full_text[:3000] # 토큰 절약을 위해 3000자 제한
+
+            batch_input.append({
+                "id": idx,
+                "title": item['title'],
+                "content_to_analyze": content_to_analyze,
+                "original_url": url,
+                "image_url": top_image
+            })
+            
         except Exception as e:
-            print(f"Deep analysis error for {url}: {e}")
-            # 에러 발생 시 1차 분석 결과라도 유지
-            refined_items.append(item)
+            print(f"Error extracting {url}: {e}")
+            continue
+
+    if not batch_input:
+        return []
+
+    # 2. 하나의 프롬프트에 묶어서(Batch) AI에 요청
+    import json
+    # 입력 데이터에서 URL/Image는 제외하고 제목과 텍스트만 전달 (토큰 절약 및 할루시네이션 방지)
+    ai_request_data = [{"id": b["id"], "title": b["title"], "content": b["content_to_analyze"]} for b in batch_input]
+    
+    prompt = f"""
+    당신은 세계 최고의 경제 전문 팩트체커입니다.
+    다음은 {len(batch_input)}개의 기사 후보 목록입니다. 각 기사의 제목과 본문을 분석하여, 속보로서 가치가 있는 기사들을 일괄적으로 JSON 배열 형태로 요약해 주세요.
+
+    [작성 가이드라인]
+    - **수치 및 팩트 강조**: 경제 지표/실적 기사인 경우 퍼센트(%), 금액($) 등 수치를 반드시 포함하세요. 단, 전쟁/테러 같은 중대한 돌발 사건은 수치 대신 타격 위치 등 '결정적인 사실'을 명시하세요.
+    - **짧은 텍스트(TEXT_TOO_SHORT) 처리**: 본문이 "TEXT_TOO_SHORT"로 전달된 경우, 오직 '제목'만을 바탕으로 독자가 상황을 충분히 이해할 수 있도록 팩트 중심의 완성된 문장(5~100자)을 창작하여 `content`를 채우세요. 절대로 '내용이 없다'고 답변하지 말고, 블룸버그/로이터 톤으로 요약하세요.
+    - **필터링 규칙**: 기사 내용이 제목과 완전히 무관하거나 낚시성 기사라면 배열에서 아예 제외(삭제)하세요. 그렇지 않다면 반드시 결과 배열에 포함시키세요.
+
+    [입력 데이터]
+    {json.dumps(ai_request_data, ensure_ascii=False, indent=2)}
+
+    [출력 데이터 형식 (반드시 JSON 배열 형태로만 출력할 것)]
+    [
+      {{
+        "id": "입력받은 기사의 id (정수 값 유지 필수)",
+        "title": "한국어로 번역/정제된 15자 이내 깔끔한 제목 (이모지 1개 필수 포함)",
+        "content": "본문의 핵심 수치가 포함된 1~2문장 요약 (110자 이내)",
+        "importance_score": 7~10점 사이 점수 (속보성이 매우 높은지 판단),
+        "category": "market/indicator/geopolitics/corporate 중 택 1"
+      }}
+    ]
+    """
+
+    refined_items = []
+    try:
+        response = safe_generate_content(prompt)
+        
+        if not response:
+            print("⚠️ 모든 기사 AI 분석 실패 (Rate limits 또는 모델 에러).")
+            return []
+
+        text = response.text
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0]
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0]
+
+        ai_results = json.loads(text.strip())
+        
+        # 3. AI가 생성한 결과물과 기존에 가지고 있던 URL/Image 매핑
+        for result in ai_results:
+            match_id = result.get("id")
             
-        # RPM 분산을 위한 쿨타임 강제 주입 (다음 뉴스 처리 전 최소 4초 대기)
-        time.sleep(4)
-            
+            # 매칭되는 원본 데이터 찾기
+            original_data = next((item for item in batch_input if item["id"] == match_id), None)
+            if original_data:
+                result['original_url'] = original_data['original_url']
+                result['image_url'] = original_data['image_url']
+                refined_items.append(result)
+                print(f"  ✨ Deep Analysis Success [{match_id}]: {result.get('title')}")
+            else:
+                print(f"  🗑️ Found result without matching ID, discarding array object: {result.get('title')}")
+                
+        # 쿨타임 강제 주입
+        import time
+        time.sleep(5)
+                
+    except Exception as e:
+        print(f"Batch AI processing error: {e}")
+
     return refined_items
 
 def save_and_notify(news_item):
