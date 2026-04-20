@@ -31,6 +31,22 @@ genai.configure(api_key=GOOGLE_API_KEY)
 model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+def safe_generate_content(model_instance, prompt_text, max_retries=3):
+    """429 에러 방어를 위한 안전한 Gemini API 호출 함수"""
+    for attempt in range(max_retries):
+        try:
+            return model_instance.generate_content(prompt_text)
+        except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "Too Many" in error_msg or "Quota" in error_msg or "Resource" in error_msg:
+                wait_time = (attempt + 1) * 10
+                print(f"⚠️ [429 Error] {wait_time}초 대기 후 API 재시도 중... (시도 {attempt+1}/{max_retries})")
+                time.sleep(wait_time)
+            else:
+                raise e
+    print("🚨 최대 재시도 횟수를 초과했습니다. 이번 요청은 건너뜁니다.")
+    return None
+
 # 감시할 뉴스 소스 (RSS) - 실시간 '속보' 전용 시스템으로 전면 교체
 RSS_FEEDS = [
     # 1. Reuters (via Google News) - 로이터 통신 (최근 1시간 내 구글에 인덱싱된 로이터 실시간 기사 우회 수집)
@@ -267,7 +283,9 @@ def filter_breaking_news(headlines, recent_titles):
     """
 
     try:
-        response = model.generate_content(prompt)
+        response = safe_generate_content(model, prompt)
+        if not response:
+            return []
         text = response.text
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
@@ -339,13 +357,19 @@ def perform_deep_analysis(candidates):
                 - 블룸버그/로이터 뉴스 톤앤매너를 유지하세요.
                 """
                 try:
-                    fb_response = model.generate_content(fallback_prompt)
-                    item['content'] = fb_response.text.strip()
+                    fb_response = safe_generate_content(model, fallback_prompt)
+                    if fb_response:
+                        item['content'] = fb_response.text.strip()
+                    else:
+                        item['content'] = f"{item['title']} 관련 긴급 시장 상황이 발생했습니다. 자세한 내용은 원본 기사를 참조하시기 바랍니다."
                 except:
                     item['content'] = f"{item['title']} 관련 긴급 시장 상황이 발생했습니다. 자세한 내용은 원본 기사를 참조하시기 바랍니다."
                 
                 item['image_url'] = top_image
                 refined_items.append(item)
+                
+                # RPM 분산을 위한 쿨타임 주입 (1분 15회 제한 고려)
+                time.sleep(4)
                 continue
 
             # 2. 본문 기반 AI 재심사 및 요약
@@ -370,7 +394,12 @@ def perform_deep_analysis(candidates):
             }}
             """
             
-            response = model.generate_content(prompt)
+            response = safe_generate_content(model, prompt)
+            if not response:
+                # API 호출 완전 실패 시 해당 기사는 다음 기회를 위해 스킵하거나 기본값 처리
+                time.sleep(4)
+                continue
+                
             text = response.text
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0]
@@ -391,6 +420,9 @@ def perform_deep_analysis(candidates):
             print(f"Deep analysis error for {url}: {e}")
             # 에러 발생 시 1차 분석 결과라도 유지
             refined_items.append(item)
+            
+        # RPM 분산을 위한 쿨타임 강제 주입 (다음 뉴스 처리 전 최소 4초 대기)
+        time.sleep(4)
             
     return refined_items
 
