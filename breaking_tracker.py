@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import calendar
+import difflib
 import feedparser
 import requests
 from collections import deque
@@ -130,6 +131,19 @@ def get_recent_news_titles():
     except Exception as e:
         print(f"Error fetching recent titles: {e}")
         return []
+
+def is_similar_title(new_title, recent_titles, threshold=0.60):
+    """
+    difflib을 사용해 새 뉴스의 제목이 기존 최근 뉴스 제목들과 
+    얼마나 유사한지(60% 이상) 검사합니다.
+    """
+    new_t_clean = new_title.lower().replace(" ", "")
+    for existing_title in recent_titles:
+        exist_t_clean = existing_title.lower().replace(" ", "")
+        similarity = difflib.SequenceMatcher(None, new_t_clean, exist_t_clean).ratio()
+        if similarity >= threshold:
+            return True
+    return False
 
 def fetch_latest_headlines():
     headlines = []
@@ -546,11 +560,19 @@ def main():
             # 3. DB에서 최근 보도된 뉴스 목록 가져오기 (문맥 파악 및 중복 방지용)
             recent_titles = get_recent_news_titles()
 
+            # ✨ 파이썬 측 텍스트 유사도 기반 중복 차단 (AI 토큰 절약)
+            unique_headlines = []
+            for h in new_headlines:
+                if not is_similar_title(h['title'], recent_titles, threshold=0.60):
+                    unique_headlines.append(h)
+                else:
+                    print(f"  ⏭️ Skip (Text Similarity): {h['title'][:50]}...")
+
             # 4. AI 필터링 및 요약
-            if new_headlines:
+            if unique_headlines:
                 # [1차] 제목 기반 후보 선별
-                print(f"🔍 [Pass 1] Screening {len(new_headlines)} headlines...")
-                candidates = filter_breaking_news(new_headlines, recent_titles)
+                print(f"🔍 [Pass 1] Screening {len(unique_headlines)} headlines...")
+                candidates = filter_breaking_news(unique_headlines, recent_titles)
                 
                 if candidates:
                     # [2차] 본문 데이터 추출 및 심층 분석
@@ -563,7 +585,7 @@ def main():
                 else:
                     print("🍃 No high-impact candidates found by titles.")
             else:
-                print("💤 No new headlines to analyze.")
+                print("💤 No new/unique headlines to analyze.")
             
             # 6. 주기 설정 (120초 - 2분마다 체크 추천, 현재는 180초)
             time.sleep(120)
