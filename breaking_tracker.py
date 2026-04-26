@@ -234,8 +234,6 @@ def fetch_latest_headlines():
 def filter_breaking_news(headlines, recent_titles):
     """
     Gemini AI를 사용하여 수집된 뉴스 중 진짜 '속보' 가치가 있는 것만 선별합니다.
-    최근에 이미 보도된 내용과 겹치는지 체크합니다.
-    URL 변조를 방지하기 위해 ID 매핑 방식을 사용합니다.
     """
     if not headlines:
         return []
@@ -247,6 +245,20 @@ def filter_breaking_news(headlines, recent_titles):
         h_copy['temp_id'] = idx
         headlines_with_id.append(h_copy)
 
+    # 현재 한국 시간 기준 요일 파악 및 주말 특별 지침 생성
+    kst = timezone(timedelta(hours=9))
+    now_kst = datetime.now(kst)
+    is_weekend = now_kst.weekday() >= 5 # 5: 토요일, 6: 일요일
+    
+    weekend_rule = ""
+    if is_weekend:
+        weekend_rule = """
+    [주말 특별 지침 - 매우 중요🚨]
+    - 현재는 주말(휴장일)입니다. 미국/한국 주식 시장은 닫혀 있습니다.
+    - 따라서 특정 종목의 "급등", "급락", "상한가", "폭등" 등을 언급하는 주식 기사는 **100% 지난 금요일(평일)의 결과를 뒤늦게 요약/재탕하는 해설 기사**입니다. 절대 속보가 아니므로 **무조건 버리세요.**
+    - 주말에는 **암호화폐(비트코인 등 24시간 거래), 전쟁/테러, 자연재해, 정치적 중대 발표** 등 "주말 당일에 실제로 발생한 사건"만 속보로 인정합니다.
+        """
+
     prompt = f"""
     당신은 글로벌 경제 및 증시 트렌드를 발빠르게 전달하는 수석 에디터입니다.
     현재 수집된 뉴스 목록에서 '시장의 흐름을 파악하는 데 도움이 되는 유의미한 뉴스'들을 선별해주세요.
@@ -257,7 +269,7 @@ def filter_breaking_news(headlines, recent_titles):
     [최근 보도된 속보 (중복 금지)]
     {json.dumps(recent_titles, ensure_ascii=False)}
 
-    [엄격한 '단일 사건' 선별 기준 - 동향 분석 절대 금지]
+    [엄격한 '단일 사건' 선별 기준 - 동향 분석 절대 금지]{weekend_rule}
     아무리 30분 이내에 올라온 기사라도, 이미 일어난 일을 설명하거나 풀이하는 '해설 기사'는 철저하게 걸러내야 합니다. 오직 방금 발생한 '새로운 팩트(New Fact)'가 발생한 기사만 선별하세요.
     0. **중복 완벽 차단 (최우선)**: 위에 제공된 [최근 보도된 속보] 목록을 반드시 읽으세요. 다른 언론사가 썼거나 제목이 달라도, **이미 보도된 속보와 '동일한 사건(원인/결과)'**이라면 절대 중복해서 내보내지 말고 **무조건 버리세요.**
     1. **필터링 대상 (무조건 Skip)**: 
@@ -370,6 +382,13 @@ def perform_deep_analysis(candidates):
     # 입력 데이터에서 URL/Image는 제외하고 제목과 텍스트만 전달 (토큰 절약 및 할루시네이션 방지)
     ai_request_data = [{"id": b["id"], "title": b["title"], "content": b["content_to_analyze"]} for b in batch_input]
     
+    # 주말 컨텍스트 공유
+    kst = timezone(timedelta(hours=9))
+    is_weekend = datetime.now(kst).weekday() >= 5
+    weekend_rule = ""
+    if is_weekend:
+        weekend_rule = "- **주말 예외 처리**: 현재는 주말이므로 시장이 휴장입니다. 기업의 주가 등락을 이유 없이 단순 나열하거나 금요일 장 마감 상황을 재보도하는 내용은 배열에서 제외하세요."
+
     prompt = f"""
     당신은 세계 최고의 경제 전문 팩트체커입니다.
     다음은 {len(batch_input)}개의 기사 후보 목록입니다. 각 기사의 제목과 본문을 분석하여, 속보로서 가치가 있는 기사들을 일괄적으로 JSON 배열 형태로 요약해 주세요.
@@ -378,6 +397,7 @@ def perform_deep_analysis(candidates):
     - **수치 및 팩트 강조**: 경제 지표/실적 기사인 경우 퍼센트(%), 금액($) 등 수치를 반드시 포함하세요. 단, 전쟁/테러 같은 중대한 돌발 사건은 수치 대신 타격 위치 등 '결정적인 사실'을 명시하세요.
     - **짧은 텍스트(TEXT_TOO_SHORT) 처리**: 본문이 "TEXT_TOO_SHORT"로 전달된 경우, 오직 '제목'만을 바탕으로 독자가 상황을 충분히 이해할 수 있도록 팩트 중심의 완성된 문장(5~100자)을 창작하여 `content`를 채우세요. 절대로 '내용이 없다'고 답변하지 말고, 블룸버그/로이터 톤으로 요약하세요.
     - **필터링 규칙**: 기사 내용이 제목과 완전히 무관하거나 낚시성 기사라면 배열에서 아예 제외(삭제)하세요. 그렇지 않다면 반드시 결과 배열에 포함시키세요.
+    {weekend_rule}
 
     [입력 데이터]
     {json.dumps(ai_request_data, ensure_ascii=False, indent=2)}
