@@ -17,7 +17,7 @@ def safe_generate_content(prompt_text, max_retries=10):
     OpenRouter API 브로커 (DeepSeek V3 메인 + Gemini 2.5 Flash 백업)
     """
     # 환경 변수 및 설정
-    AI_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "deepseek/deepseek-chat")
+    AI_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "google/gemini-2.5-flash-lite")
     BACKUP_MODEL_NAME = os.getenv("OPENROUTER_BACKUP_MODEL", "google/gemini-2.5-flash")
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
