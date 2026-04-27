@@ -6,6 +6,8 @@ import calendar
 import difflib
 import feedparser
 import requests
+import pandas as pd
+import exchange_calendars as xcals
 from collections import deque
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs
@@ -13,7 +15,6 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from newspaper import Article, Config
-import requests
 
 # 상위 디렉토리 참조 추가
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -75,6 +76,29 @@ RSS_FEEDS = [
 processed_news = deque(maxlen=500)
 
 
+def is_market_open():
+    """
+    exchange_calendars를 사용하여 실시간으로 한국(KRX) 또는 미국(XNYS) 시장이 열려있는지 확인합니다.
+    """
+    try:
+        krx = xcals.get_calendar("XKRX")
+        nyse = xcals.get_calendar("XNYS")
+        now_utc = pd.Timestamp.now(tz="UTC")
+        
+        # 현재 분(minute) 기준으로 시장이 열려있는지 확인
+        kr_open = krx.is_open_on_minute(now_utc)
+        us_open = nyse.is_open_on_minute(now_utc)
+        
+        return kr_open or us_open
+    except Exception as e:
+        print(f"Error checking market status: {e}")
+        # 에러 발생 시 기존처럼 주말로 판별하는 Fallback
+        kst = timezone(timedelta(hours=9))
+        now_kst = datetime.now(kst)
+        is_weekend = now_kst.weekday() >= 5
+        return not is_weekend
+
+
 def is_already_saved(url):
     """DB에 이미 해당 URL의 속보가 있는지 확인합니다."""
     try:
@@ -85,23 +109,23 @@ def is_already_saved(url):
         return False
 
 
-def get_recent_news_titles():
-    """DB에서 최근 50개의 속보 제목을 가져옵니다."""
+def get_recent_news_list():
+    """DB에서 최근 30개의 속보 제목과 내용을 함께 가져옵니다."""
     try:
-        res = supabase.table("breaking_news").select("title").order("created_at", desc=True).limit(50).execute()
-        return [item['title'] for item in res.data]
+        res = supabase.table("breaking_news").select("title, content").order("created_at", desc=True).limit(30).execute()
+        return [{"title": item['title'], "content": item['content']} for item in res.data]
     except Exception as e:
-        print(f"Error fetching recent titles: {e}")
+        print(f"Error fetching recent news: {e}")
         return []
 
-def is_similar_title(new_title, recent_titles, threshold=0.60):
+def is_similar_title(new_title, recent_news_list, threshold=0.60):
     """
     difflib을 사용해 새 뉴스의 제목이 기존 최근 뉴스 제목들과 
     얼마나 유사한지(60% 이상) 검사합니다.
     """
     new_t_clean = new_title.lower().replace(" ", "")
-    for existing_title in recent_titles:
-        exist_t_clean = existing_title.lower().replace(" ", "")
+    for existing_news in recent_news_list:
+        exist_t_clean = existing_news['title'].lower().replace(" ", "")
         similarity = difflib.SequenceMatcher(None, new_t_clean, exist_t_clean).ratio()
         if similarity >= threshold:
             return True
@@ -231,7 +255,7 @@ def fetch_latest_headlines():
 
     return headlines
 
-def filter_breaking_news(headlines, recent_titles):
+def filter_breaking_news(headlines, recent_news_list):
     """
     Gemini AI를 사용하여 수집된 뉴스 중 진짜 '속보' 가치가 있는 것만 선별합니다.
     """
@@ -245,18 +269,16 @@ def filter_breaking_news(headlines, recent_titles):
         h_copy['temp_id'] = idx
         headlines_with_id.append(h_copy)
 
-    # 현재 한국 시간 기준 요일 파악 및 주말 특별 지침 생성
-    kst = timezone(timedelta(hours=9))
-    now_kst = datetime.now(kst)
-    is_weekend = now_kst.weekday() >= 5 # 5: 토요일, 6: 일요일
+    # 실시간 개장/휴장 특별 지침 생성
+    market_opened = is_market_open()
     
-    weekend_rule = ""
-    if is_weekend:
-        weekend_rule = """
-    [주말 특별 지침 - 매우 중요🚨]
-    - 현재는 주말(휴장일)입니다. 미국/한국 주식 시장은 닫혀 있습니다.
-    - 따라서 특정 종목의 "급등", "급락", "상한가", "폭등" 등을 언급하는 주식 기사는 **100% 지난 금요일(평일)의 결과를 뒤늦게 요약/재탕하는 해설 기사**입니다. 절대 속보가 아니므로 **무조건 버리세요.**
-    - 주말에는 **암호화폐(비트코인 등 24시간 거래), 전쟁/테러, 자연재해, 정치적 중대 발표** 등 "주말 당일에 실제로 발생한 사건"만 속보로 인정합니다.
+    market_closed_rule = ""
+    if not market_opened:
+        market_closed_rule = """
+    [휴장 특별 지침 - 매우 중요🚨]
+    - 현재는 거래소 휴장(주말 또는 야간) 상태입니다. 주식 시장은 닫혀 있습니다.
+    - 따라서 특정 종목의 "급등", "급락", "상한가", "폭등", "실적 발표 후 주가 상승" 등을 언급하는 주식 기사는 **100% 지난 거래일의 결과를 뒤늦게 요약/재탕하는 해설 기사**입니다. 절대 속보가 아니므로 **무조건 버리세요.**
+    - 휴장 시간에는 **암호화폐(비트코인 등 24시간 거래), 전쟁/테러, 자연재해, 정치적 중대 발표** 등 "오늘 실제로 발생한 사건"만 속보로 인정합니다.
         """
 
     prompt = f"""
@@ -267,11 +289,11 @@ def filter_breaking_news(headlines, recent_titles):
     {json.dumps(headlines_with_id, ensure_ascii=False)}
 
     [최근 보도된 속보 (중복 금지)]
-    {json.dumps(recent_titles, ensure_ascii=False)}
+    {json.dumps(recent_news_list, ensure_ascii=False)}
 
-    [엄격한 '단일 사건' 선별 기준 - 동향 분석 절대 금지]{weekend_rule}
+    [엄격한 '단일 사건' 선별 기준 - 동향 분석 절대 금지]{market_closed_rule}
     아무리 30분 이내에 올라온 기사라도, 이미 일어난 일을 설명하거나 풀이하는 '해설 기사'는 철저하게 걸러내야 합니다. 오직 방금 발생한 '새로운 팩트(New Fact)'가 발생한 기사만 선별하세요.
-    0. **중복 완벽 차단 (최우선)**: 위에 제공된 [최근 보도된 속보] 목록을 반드시 읽으세요. 다른 언론사가 썼거나 제목이 달라도, **이미 보도된 속보와 '동일한 사건(원인/결과)'**이라면 절대 중복해서 내보내지 말고 **무조건 버리세요.**
+    0. **중복 완벽 차단 (최우선)**: 위에 제공된 [최근 보도된 속보] 목록을 반드시 읽으세요. 이미 보도된 속보와 '동일한 사건'이라면 무조건 버리세요. 또한, 현재 들어온 [후보 뉴스 리스트] 안에서도 똑같은 사건을 다루는 비슷한 기사(타 언론사 중복 송고)가 여러 개 있다면, 가장 정보가 많은 단 1개만 선택하고 나머지는 중복으로 처리해 버리세요.
     1. **필터링 대상 (무조건 Skip)**: 
        - "증시 마감 요약", "주간 동향", "오늘의 시장 정리(Wrap-up)", "경제 지표 프리뷰(Preview)"
        - "테슬라 주가가 급락한 3가지 이유", "향후 전망과 분석(Opinion/Analysis)", "전문가 칼럼" 등.
@@ -327,7 +349,7 @@ def filter_breaking_news(headlines, recent_titles):
         print(f"AI filtering error: {e}")
         return []
 
-def perform_deep_analysis(candidates):
+def perform_deep_analysis(candidates, recent_news_list):
     """
     선별된 뉴스 후보들의 본문을 직접 읽고,
     수치 검증 및 상세 분석을 통해 묶어서(Batch) 최종 뉴스 데이터를 생성합니다.
@@ -372,7 +394,14 @@ def perform_deep_analysis(candidates):
             
         except Exception as e:
             print(f"Error extracting {url}: {e}")
-            continue
+            print(f"⚠️ Fallback to title-based generation for: {item['title'][:30]}...")
+            batch_input.append({
+                "id": idx,
+                "title": item['title'],
+                "content_to_analyze": "TEXT_TOO_SHORT",
+                "original_url": url,
+                "image_url": ""
+            })
 
     if not batch_input:
         return []
@@ -382,12 +411,11 @@ def perform_deep_analysis(candidates):
     # 입력 데이터에서 URL/Image는 제외하고 제목과 텍스트만 전달 (토큰 절약 및 할루시네이션 방지)
     ai_request_data = [{"id": b["id"], "title": b["title"], "content": b["content_to_analyze"]} for b in batch_input]
     
-    # 주말 컨텍스트 공유
-    kst = timezone(timedelta(hours=9))
-    is_weekend = datetime.now(kst).weekday() >= 5
-    weekend_rule = ""
-    if is_weekend:
-        weekend_rule = "- **주말 예외 처리**: 현재는 주말이므로 시장이 휴장입니다. 기업의 주가 등락을 이유 없이 단순 나열하거나 금요일 장 마감 상황을 재보도하는 내용은 배열에서 제외하세요."
+    # 실시간 개장/휴장 컨텍스트 공유
+    market_opened = is_market_open()
+    market_closed_rule = ""
+    if not market_opened:
+        market_closed_rule = "- **휴장 예외 처리**: 현재는 거래소 휴장입니다. 기업의 주가 등락을 이유 없이 단순 나열하거나 지난 장 마감 상황을 재보도하는 내용은 속보가 아니므로 배열에서 제외하세요."
 
     prompt = f"""
     당신은 세계 최고의 경제 전문 팩트체커입니다.
@@ -397,10 +425,15 @@ def perform_deep_analysis(candidates):
     - **수치 및 팩트 강조**: 경제 지표/실적 기사인 경우 퍼센트(%), 금액($) 등 수치를 반드시 포함하세요. 단, 전쟁/테러 같은 중대한 돌발 사건은 수치 대신 타격 위치 등 '결정적인 사실'을 명시하세요.
     - **짧은 텍스트(TEXT_TOO_SHORT) 처리**: 본문이 "TEXT_TOO_SHORT"로 전달된 경우, 오직 '제목'만을 바탕으로 독자가 상황을 충분히 이해할 수 있도록 팩트 중심의 완성된 문장(5~100자)을 창작하여 `content`를 채우세요. 절대로 '내용이 없다'고 답변하지 말고, 블룸버그/로이터 톤으로 요약하세요.
     - **필터링 규칙**: 기사 내용이 제목과 완전히 무관하거나 낚시성 기사라면 배열에서 아예 제외(삭제)하세요. 그렇지 않다면 반드시 결과 배열에 포함시키세요.
-    {weekend_rule}
+    {market_closed_rule}
 
     [입력 데이터]
     {json.dumps(ai_request_data, ensure_ascii=False, indent=2)}
+
+    [최근 보도된 속보 (중복 금지)]
+    {json.dumps(recent_news_list, ensure_ascii=False, indent=2)}
+    
+    위의 [최근 보도된 속보] 리스트를 반드시 읽으세요. 이미 보도된 사건과 '동일한 사실(원인/결과)'을 다루는 기사라면, 다른 언론사에서 다르게 썼더라도 무조건 배열에서 완전히 삭제(제외)하세요. 중복 뉴스는 단 하나도 출력되면 안 됩니다.
 
     [출력 데이터 형식 (반드시 JSON 배열 형태로만 출력할 것)]
     [
@@ -540,12 +573,12 @@ def main():
                     pass
             
             # 3. DB에서 최근 보도된 뉴스 목록 가져오기 (문맥 파악 및 중복 방지용)
-            recent_titles = get_recent_news_titles()
+            recent_news_list = get_recent_news_list()
 
             # ✨ 파이썬 측 텍스트 유사도 기반 중복 차단 (AI 토큰 절약)
             unique_headlines = []
             for h in new_headlines:
-                if not is_similar_title(h['title'], recent_titles, threshold=0.60):
+                if not is_similar_title(h['title'], recent_news_list, threshold=0.60):
                     unique_headlines.append(h)
                 else:
                     print(f"  ⏭️ Skip (Text Similarity): {h['title'][:50]}...")
@@ -554,16 +587,23 @@ def main():
             if unique_headlines:
                 # [1차] 제목 기반 후보 선별
                 print(f"🔍 [Pass 1] Screening {len(unique_headlines)} headlines...")
-                candidates = filter_breaking_news(unique_headlines, recent_titles)
+                candidates = filter_breaking_news(unique_headlines, recent_news_list)
                 
                 if candidates:
                     # [2차] 본문 데이터 추출 및 심층 분석
                     print(f"🧐 [Pass 2] Deep analyzing {len(candidates)} candidates...")
-                    final_items = perform_deep_analysis(candidates)
+                    final_items = perform_deep_analysis(candidates, recent_news_list)
                     
-                    # 5. 저장 및 알림
+                    # 5. 저장 및 알림 (최종 한국어 번역본으로 한 번 더 중복 검사)
                     for item in final_items:
+                        if is_similar_title(item['title'], recent_news_list, threshold=0.55):
+                            print(f"  ⏭️ Skip (Final Similarity Cut): {item['title']} - 이미 발송된 유사 사건입니다.")
+                            continue
+                            
                         save_and_notify(item)
+                        
+                        # 방금 발송한 속보를 현재 리스트에도 추가하여, 같은 배치 내 연속 중복도 완벽하게 차단
+                        recent_news_list.append({"title": item['title'], "content": item.get('content', '')})
                 else:
                     print("🍃 No high-impact candidates found by titles.")
             else:
