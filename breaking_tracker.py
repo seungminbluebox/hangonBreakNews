@@ -73,7 +73,7 @@ RSS_FEEDS = [
 ]
 
 # 메모리 상에서 이미 처리한 뉴스 제목 저장 (중복 방지 및 메모리 효율화)
-processed_news = deque(maxlen=500)
+processed_news = deque(maxlen=2000)
 
 
 def is_market_open():
@@ -110,9 +110,9 @@ def is_already_saved(url):
 
 
 def get_recent_news_list():
-    """DB에서 최근 30개의 속보 제목과 내용을 함께 가져옵니다."""
+    """DB에서 최근 500개의 속보 제목과 내용을 함께 가져옵니다."""
     try:
-        res = supabase.table("breaking_news").select("title, content").order("created_at", desc=True).limit(30).execute()
+        res = supabase.table("breaking_news").select("title, content").order("created_at", desc=True).limit(500).execute()
         return [{"title": item['title'], "content": item['content']} for item in res.data]
     except Exception as e:
         print(f"Error fetching recent news: {e}")

@@ -61,7 +61,7 @@ class ExchangeMonitor:
             # [수정] 첫 실행 시 현재 가격을 기준으로 모든 '현재 상태'의 단계를 이미 알림한 것으로 간주
             # 이렇게 하면 시작하자마자 알림이 오는 것을 방지할 수 있습니다.
             diff = current_price - self.daily_base_price
-            current_step = int(diff // self.STEP_UNIT)
+            current_step = int(diff / self.STEP_UNIT)
             if current_step != 0:
                 self.notified_steps.add(current_step)
                 
@@ -70,8 +70,8 @@ class ExchangeMonitor:
 
         # 2. 변동 폭 및 단계(Step) 계산
         diff = current_price - self.daily_base_price
-        # int(diff // 10) 방식은 양수/음수 단계 구분에 효과적임
-        current_step = int(diff // self.STEP_UNIT)
+        # int(diff / 10) 방식으로 음수(-0.1원)가 -1단계로 처리되는 것을 방지 (0에 가깝게 버림)
+        current_step = int(diff / self.STEP_UNIT)
         
         # 0단계(10원 미만 변동)는 무시
         if current_step == 0:
