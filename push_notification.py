@@ -34,8 +34,8 @@ if not firebase_admin._apps:
         
         # 실제 파일명 상수로 정의
         FIREBASE_KEY_FILENAME = 'hangonalarm-firebase-adminsdk-fbsvc-a0ddf6e01d.json'
-        # hangonbackend 최상단 기준 경로 확인
-        key_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), FIREBASE_KEY_FILENAME)
+        # hangonBreakNews 폴더 안에 있는 파일 경로
+        key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), FIREBASE_KEY_FILENAME)
         
         if firebase_credentials_env:
             # 1. 환경변수(GitHub Secrets 또는 .env)에서 JSON 로드
