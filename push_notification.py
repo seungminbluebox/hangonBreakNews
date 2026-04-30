@@ -144,13 +144,9 @@ def send_push_notification(title, body, url="/", category=None, test_fcm_token=N
             # 고유 태그 설정 (각 알림이 독립적으로 쌓이도록 타임스탬프 추가)
             notification_tag = f"hangon-{category if category else 'upd'}-{int(time.time() * 1000)}"
             
-            # 메시지 구성 (완벽한 Data-only 메시지 + notification 필드 추가로 신뢰성 극대화)
+            # 메시지 구성 (완벽한 Data-only 메시지)
             message = messaging.MulticastMessage(
                 tokens=token_chunk,
-                notification=messaging.Notification(
-                    title=title,
-                    body=body,
-                ),
                 data={
                     "title": title,
                     "body": body,
