@@ -44,7 +44,7 @@ def safe_generate_content(prompt_text, max_retries=10):
             "messages": [
                 {"role": "user", "content": enforced_prompt}
             ],
-            "max_tokens": 3000,
+            "max_tokens": 500,
             "temperature": 0.2
         }
         
