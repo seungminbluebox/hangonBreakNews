@@ -33,7 +33,31 @@ def safe_generate_content(prompt_text, max_retries=10):
     }
     
     # 속보 분석용 프롬프트는 묶음 처리 요청이므로 JSON 반환을 강제함
-    enforced_prompt = prompt_text + "\n\n(IMPORTANT: 응답은 반드시 마크다운 백틱(```json) 없이 순수한 JSON 텍스트로만 반환하세요.)"
+    enforced_prompt = prompt_text + "\n\n(IMPORTANT: 응답은 반드시 마크다운 백틱(```json) 없이 순수한 JSON 텍스트로만 반환하세요. 만약 사고 과정(Thought)이 포함된다면 반드시 마지막에 JSON만 출력하세요.)"
+
+    # 응답에서 JSON만 추출하는 내부 함수
+    def extract_json_payload(text):
+        try:
+            # 1. 마크다운 백틱 제거 시도
+            match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+            
+            # 2. 첫 번째 '[' 와 마지막 ']' 사이 추출 (배열)
+            start_idx = text.find('[')
+            end_idx = text.rfind(']')
+            if start_idx != -1 and end_idx != -1:
+                return text[start_idx:end_idx+1].strip()
+            
+            # 3. 첫 번째 '{' 와 마지막 '}' 사이 추출 (객체)
+            start_idx = text.find('{')
+            end_idx = text.rfind('}')
+            if start_idx != -1 and end_idx != -1:
+                return text[start_idx:end_idx+1].strip()
+                
+            return text.strip()
+        except:
+            return text.strip()
 
     for attempt in range(max_retries):
         # 첫 2회까지는 메인 모델, 그 이후는 백업 모델 시도
@@ -53,12 +77,10 @@ def safe_generate_content(prompt_text, max_retries=10):
             res.raise_for_status() 
             
             result_json = res.json()
-            content_text = result_json['choices'][0]['message']['content'].strip()
+            raw_content = result_json['choices'][0]['message']['content'].strip()
             
-            # DeepSeek 등 특정 모델이 앞뒤에 ```json을 붙이는 버그 강력 제거 (정규식 활용)
-            content_text = re.sub(r"^```(?:json)?\s*", "", content_text, flags=re.IGNORECASE)
-            content_text = re.sub(r"\s*```$", "", content_text)
-            content_text = content_text.strip()
+            # 사고 과정이나 마크다운이 섞여있어도 JSON만 정교하게 추출
+            content_text = extract_json_payload(raw_content)
             
             return DummyResponse(content_text)
             

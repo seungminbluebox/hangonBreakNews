@@ -35,41 +35,46 @@ from llm_helper import safe_generate_content
 
 # 감시할 뉴스 소스 (RSS) - 실시간 '속보' 전용 시스템으로 전면 교체
 RSS_FEEDS = [
-    # 1. Reuters (via Google News) - 로이터 통신 (최근 1시간 내 구글에 인덱싱된 로이터 실시간 기사 우회 수집)
-    "https://news.google.com/rss/search?q=site:reuters.com+when:1h&hl=en-US&gl=US&ceid=US:en",
-    
-    # 2. Bloomberg (via Google News) - 블룸버그 1시간 내 속보 우회 수집
+    # 1. Bloomberg (via Google News) - 블룸버그 1시간 내 속보 우회 수집
     "https://news.google.com/rss/search?q=site:bloomberg.com+when:1h&hl=en-US&gl=US&ceid=US:en",
-    
-    # 3. WSJ (via Google News) - 월스트리트저널 1시간 내 속보 우회 수집
-    "https://news.google.com/rss/search?q=site:wsj.com+when:1h&hl=en-US&gl=US&ceid=US:en",
 
-    # 4. MarketWatch MarketPulse (단신/수치 팩트 최강, 해설 기사가 거의 없고 수치 위주의 가장 빠른 매체)
-    "http://feeds.marketwatch.com/marketwatch/marketpulse/",
-
-    # 5. CNBC Top & Breaking News (미장 시작 전후 실적발표 및 M&A 최적화)
+    # 2. CNBC Top & Breaking News (미장 시작 전후 실적발표 및 M&A 최적화)
     "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114",
 
-    # 6. ForexLive (외환시장, 주요국 중앙은행 인사들의 실시간 발언, 거시경제 단신이 가장 빠름)
+    # 3. ForexLive (외환시장, 주요국 중앙은행 인사들의 실시간 발언, 거시경제 단신이 가장 빠름)
     "https://www.forexlive.com/feed/news",
 
-    # 7. FXStreet 실시간 경제 뉴스 (Trading Economics의 403 차단을 완전히 대체하는 가장 빠른 거시경제/외환 단신 매체)
+    # 4. FXStreet 실시간 경제 뉴스 (Trading Economics의 403 차단을 완전히 대체하는 가장 빠른 거시경제/외환 단신 매체)
     "https://www.fxstreet.com/rss",
-
-    # 8. Investing.com Breaking News (순수 속보 채널)
-    "https://www.investing.com/rss/news_285.rss",
     
-    # 9. Investing.com Headlines / Top News (주요 헤드라인 전용 RSS)
+    # 5. Investing.com Headlines / Top News (주요 헤드라인 전용 RSS)
     "https://www.investing.com/rss/news_25.rss",
     
-    # 10. CoinDesk (주말/새벽 암호화폐 및 거시경제 선행지표 최적화)
+    # 6. CoinDesk (주말/새벽 암호화폐 및 거시경제 선행지표 최적화)
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
 
-    # 11. TheStreet (미국 주식 개별 종목, 단독 특징주 및 시장 모멘텀 보완)
+    # 7. TheStreet (미국 주식 개별 종목, 단독 특징주 및 시장 모멘텀 보완)
     "https://www.thestreet.com/.rss/full/",
     
-    # 12. Cointelegraph (가장 빠르고 굵직한 글로벌 암호화폐 전용 실시간 속보 매체)
-    "https://cointelegraph.com/rss"
+    # 8. Cointelegraph (가장 빠르고 굵직한 글로벌 암호화폐 전용 실시간 속보 매체)
+    "https://cointelegraph.com/rss",
+        # 9. Benzinga (미국 주식 실시간 특징주 및 루머/단신 최적화)
+    "https://www.benzinga.com/feed",
+    
+    # 10. Yahoo Finance (로이터, 블룸버그 등 통신사 종합 실시간 송고)
+    "https://finance.yahoo.com/news/rssindex",
+    
+    # 11. Seeking Alpha Market Currents (개별 기업 공시, 배당, 실적 등 미시적 팩트)
+    "https://seekingalpha.com/market_currents.xml",
+
+    # 12. ZeroHedge (월가 실시간 루머, 긴급 지정학적/거시경제 속보가 가장 빠르고 날것으로 올라옴)
+    "https://feeds.feedburner.com/zerohedge/feed",
+    
+    # 13. Financial Times Markets (정통 거시경제, M&A, 글로벌 탑티어 팩트 보도)
+    "https://www.ft.com/markets?format=rss",
+    
+    # 14. NYT Business (미국 정부/기업 규제, 소송, 초대형 기업 소식 모니터링)
+    "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"
 ]
 
 # 메모리 상에서 이미 처리한 뉴스 제목 저장 (중복 방지 및 메모리 효율화)
@@ -136,7 +141,7 @@ def fetch_latest_headlines():
     # 1. 기준 시간 설정 (시차 지연 및 언론사 RSS 반영 지연 대비: 3시간(180분)으로 여유 있게 설정)
     # 진짜 필터링은 DB 중복 체크 + AI 문맥 파악이 담당하므로 시간은 넉넉하게 잡는 것이 안전함.
     now_utc = datetime.now(timezone.utc)
-    time_limit_utc = now_utc - timedelta(minutes=30)
+    time_limit_utc = now_utc - timedelta(minutes=180)
     
     # ❌ 명백한 '해설/요약/전망' 기사는 AI 토큰 낭비를 막기 위해 1차 블랙리스트로만 걸러냅니다.
     # 기존의 딱딱한 BREAKING_KEYWORDS, MARKET_INDICATORS는 모두 삭제합니다. (AI 문맥 파악으로 전면 교체)
@@ -303,6 +308,7 @@ def filter_breaking_news(headlines, recent_news_list):
 - 반드시 JSON 리스트 형식으로만 답변하세요. 
 - 해설성/요약성/전망 기사 및 가십성/단순 행사 기사는 하나도 빠짐없이 전부 버리고([] 반환), 명백한 '단독(Exclusive)', '긴급 속보(Urgent/Breaking)'(전쟁/테러 포함), '주요 지표/실적 발표'에 해당하는 내용만 JSON 객체를 만드세요.
 - 중요도(importance_score): 글로벌 경제/증시/지정학적 파급력에 따라 1~10점으로 부여하되, 가치 없는 기사는 0점을 주고 제외하세요. **결과치 발표나 중대 사건일 때에만 7점 이상**을 주어 엄격하게 통과시키세요.
+- **국방/지정학 초강력 가중치 (Urgent)**: 전쟁, 미사일 발사, 대규모 군사 작전, 핵심 무기 체계 도입(F-35 등), 국가 간 군사 긴장 고조와 같은 지정학적 뉴스는 시장 공포 심리에 즉각적인 영향을 주므로, 다른 경제 뉴스보다 **기본적으로 2~3점을 더 추가**하여 산정하세요. (예: 일반적인 무기 구매 소식도 7~8점 이상으로 책정)
 - temp_id: [후보 뉴스 리스트]에서 해당 뉴스의 temp_id를 그대로 가져오세요.
 - title: 한국어로 15자 이내, 제목만 보고도 상황이 파악되게 명확하게. 문장 끝에 문장에 어울리는 이모지 하나 추가.
 - content: 수치나 핵심 팩트를 포함하여 1~2문장으로 압축.
@@ -428,7 +434,7 @@ def perform_deep_analysis(candidates, recent_news_list):
 [작성 가이드라인]
 - **수치 및 팩트 강조**: 경제 지표/실적 기사인 경우 퍼센트(%), 금액($) 등 수치를 반드시 포함하세요. 단, 전쟁/테러 같은 중대한 돌발 사건은 수치 대신 타격 위치 등 '결정적인 사실'을 명시하세요.
 - **짧은 텍스트(TEXT_TOO_SHORT) 처리**: 본문이 "TEXT_TOO_SHORT"로 전달된 경우, 오직 '제목'만을 바탕으로 독자가 상황을 충분히 이해할 수 있도록 팩트 중심의 완성된 문장(5~100자)을 창작하여 `content`를 채우세요. 절대로 '내용이 없다'고 답변하지 말고, 블룸버그/로이터 톤으로 요약하세요.
-- **필터링 규칙(가십/무관한 기사 삭제)**: 기사 내용이 제목과 완전히 무관하거나, **경제/증시/지정학과 무관한 완전 가십성 기사(예: 동물, 지역 축제 대회, 연예인, 단순 범죄 사건 등)**라면 배열에서 아예 제외(삭제)하세요. 그렇지 않다면 반드시 결과 배열에 포함시키되 `importance_score`를 엄격히 책정하세요.
+- **필터링 규칙(가십/무관한 기사 삭제)**: 기사 내용이 제목과 완전히 무관하거나, **경제/증시/지정학과 무관한 완전 가십성 기사(예: 동물, 지역 축제 대회, 연예인, 단순 범죄 사건 등)**라면 배열에서 아예 제외(삭제)하세요. 그렇지 않다면 반드시 결과 배열에 포함시키되 `importance_score`를 엄격히 책정하세요. 특히 **지정학적(geopolitics) 사건(군사적 충돌, 무기 도입, 전쟁 등)은 최소 7~9점 이상**을 부여하여 반드시 통과시키세요.
 {market_closed_rule}
 
 [출력 데이터 형식 (반드시 JSON 배열 형태로만 출력할 것)]
