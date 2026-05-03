@@ -616,8 +616,8 @@ def main():
             else:
                 print("💤 No new/unique headlines to analyze.")
             
-            # 6. 주기 설정 (120초 - 2분마다 체크 추천, 현재는 180초)
-            time.sleep(120)
+            # 6. 주기 설정 (280초)
+            time.sleep(120)  # 2분마다 체크 (시장 상황에 따라 조절 가능)
             
         except KeyboardInterrupt:
             print("Tracker stopped by user.")
