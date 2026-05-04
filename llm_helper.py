@@ -17,7 +17,7 @@ def safe_generate_content(prompt_text, max_retries=10):
     OpenRouter API 브로커 (DeepSeek V3 메인 + Gemini 2.5 Flash 백업)
     """
     # 환경 변수 및 설정
-    AI_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "nvidia/nemotron-3-super-120b-a12b:free")#google/gemini-2.5-flash-lite
+    AI_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")#google/gemini-2.5-flash-lite,nvidia/nemotron-3-super-120b-a12b:free
     BACKUP_MODEL_NAME = os.getenv("OPENROUTER_BACKUP_MODEL", "google/gemini-2.5-flash")
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
@@ -83,7 +83,11 @@ def safe_generate_content(prompt_text, max_retries=10):
             if 'choices' not in result_json:
                 raise Exception(f"API 응답에 'choices'가 없습니다: {result_json}")
                 
-            raw_content = result_json['choices'][0]['message']['content'].strip()
+            _content = result_json['choices'][0]['message'].get('content')
+            if _content is None:
+                raise ValueError("API 응답의 'content'가 null(None)입니다.")
+            
+            raw_content = _content.strip()
             
             # 사고 과정이나 마크다운이 섞여있어도 JSON만 정교하게 추출
             content_text = extract_json_payload(raw_content)
