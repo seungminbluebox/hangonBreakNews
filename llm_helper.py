@@ -77,9 +77,11 @@ def safe_generate_content(prompt_text, max_retries=10):
             res.raise_for_status() 
             
             result_json = res.json()
+            if 'error' in result_json:
+                raise Exception(f"OpenRouter API 에러: {result_json['error']}")
+            
             if 'choices' not in result_json:
-                print(f"⚠️ API 응답에 'choices'가 없습니다: {result_json}")
-                raise KeyError('choices missing in OpenRouter response')
+                raise Exception(f"API 응답에 'choices'가 없습니다: {result_json}")
                 
             raw_content = result_json['choices'][0]['message']['content'].strip()
             
@@ -104,8 +106,8 @@ def safe_generate_content(prompt_text, max_retries=10):
             continue
             
         except Exception as e:
-            print(f"❌ 예상치 못한 에러: {e}")
-            time.sleep(5)
+            print(f"⚠️ [재시도] {current_model} 통신 실패: {e}")
+            time.sleep(random.uniform(3, 8) * (attempt + 1))
             continue
 
     print("🚨 최대 재시도 횟수를 초과했습니다. 데이터 전송에 실패했습니다.")

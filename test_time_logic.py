@@ -41,21 +41,13 @@ TEST_FEEDS = [
     # # 13. Financial Times Markets (정통 거시경제, M&A, 글로벌 탑티어 팩트 보도)
     # "https://www.ft.com/markets?format=rss",
     
-    # 14. NYT Business (미국 정부/기업 규제, 소송, 초대형 기업 소식 모니터링)
-    "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml",
 
-    # 15. Defense News (글로벌 방위산업 및 군사 전략)
-    "https://www.defensenews.com/arc/outboundfeeds/rss/",
 
-    # 16. Breaking Defense (국방 정책, 군사 기술, 무기 체계)
-    "https://breakingdefense.com/feed/",
 
     # 17. Al Jazeera (중동 분쟁 및 글로벌 속보)
     "https://www.aljazeera.com/xml/rss/all.xml",
 
 
-    # 19. BBC News - World (국제 뉴스 전반)
-    "http://feeds.bbci.co.uk/news/world/rss.xml"
 ]
 
 def test_time_logic():
