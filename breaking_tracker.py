@@ -141,10 +141,10 @@ def is_similar_title(new_title, recent_news_list, threshold=0.60):
 
 def fetch_latest_headlines():
     headlines = []
-    # 1. 기준 시간 설정 (시차 지연 및 언론사 RSS 반영 지연 대비: 1시간(60분)으로 여유 있게 설정)
+    # 1. 기준 시간 설정 (시차 지연 및 언론사 RSS 반영 지연 대비: 30분으로 여유 있게 설정)
     # 진짜 필터링은 DB 중복 체크 + AI 문맥 파악이 담당하므로 시간은 넉넉하게 잡는 것이 안전함.
     now_utc = datetime.now(timezone.utc)
-    time_limit_utc = now_utc - timedelta(minutes=60)
+    time_limit_utc = now_utc - timedelta(minutes=30)
     
     # ❌ 명백한 '해설/요약/전망' 기사는 AI 토큰 낭비를 막기 위해 1차 블랙리스트로만 걸러냅니다.
     # 기존의 딱딱한 BREAKING_KEYWORDS, MARKET_INDICATORS는 모두 삭제합니다. (AI 문맥 파악으로 전면 교체)
