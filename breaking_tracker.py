@@ -589,15 +589,17 @@ def main():
             for h in raw_headlines:
                 title = h['title']
                 link = h.get('link', '')
-                if link not in processed_news:
-                    if not is_already_saved(link):
-                        new_headlines.append(h)
-                    else:
-                        print(f"  ⏭️ Skip (Already in DB): {title[:50]}...")
-                    processed_news.append(link)  # deque는 자동으로 오래된 요소 제거
+                
+                # [수정] 한 번이라도 목록에 나타난 URL은 즉시 메모리에 등록 (AI 전달 여부와 상관없이)
+                if link in processed_news:
+                    continue
+                
+                processed_news.append(link)
+                
+                if not is_already_saved(link):
+                    new_headlines.append(h)
                 else:
-                    # print(f"  ⏭️ Skip (Memory): {title[:50]}...")
-                    pass
+                    print(f"  ⏭️ Skip (Already in DB): {title[:50]}...")
             
             # 3. DB에서 최근 보도된 뉴스 목록 가져오기 (문맥 파악 및 중복 방지용)
             recent_news_list = get_recent_news_list()
