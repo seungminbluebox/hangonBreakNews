@@ -33,7 +33,7 @@ def safe_generate_content(prompt_text, max_retries=10):
     }
     
     # 속보 분석용 프롬프트는 묶음 처리 요청이므로 JSON 반환을 강제함
-    enforced_prompt = prompt_text + "\n\n(IMPORTANT: 응답은 반드시 마크다운 백틱(```json) 없이 순수한 JSON 텍스트로만 반환하세요. 만약 사고 과정(Thought)이 포함된다면 반드시 마지막에 JSON만 출력하세요.)"
+    enforced_prompt = prompt_text + "\n\n(IMPORTANT: 응답은 반드시 마크다운 백틱(```json) 없이 순수한 JSON 리스트([...]) 텍스트로만 반환하세요. 어떠한 설명, 사고 과정(Thought), 도입부 문구도 절대 포함하지 마세요. 바로 [ 로 시작해서 ] 로 끝나야 합니다.)"
 
     # 응답에서 JSON만 추출하는 내부 함수
     def extract_json_payload(text):
