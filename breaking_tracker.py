@@ -338,7 +338,16 @@ def filter_breaking_news(headlines, recent_news_list):
         elif "```" in text:
             text = text.split("```")[1].split("```")[0]
         
-        candidates = json.loads(text.strip())
+        text = text.strip()
+        if not text:
+            print("⚠️ AI 응답이 비어있습니다.")
+            return []
+            
+        try:
+            candidates = json.loads(text)
+        except json.JSONDecodeError as e:
+            print(f"JSON 파싱 에러. 원본 텍스트: {text}")
+            raise e
         
         # URL 복원 및 결과 검증
         valid_candidates = []

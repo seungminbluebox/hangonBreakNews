@@ -77,11 +77,17 @@ def safe_generate_content(prompt_text, max_retries=10):
             res.raise_for_status() 
             
             result_json = res.json()
+            if 'choices' not in result_json:
+                print(f"⚠️ API 응답에 'choices'가 없습니다: {result_json}")
+                raise KeyError('choices missing in OpenRouter response')
+                
             raw_content = result_json['choices'][0]['message']['content'].strip()
             
             # 사고 과정이나 마크다운이 섞여있어도 JSON만 정교하게 추출
             content_text = extract_json_payload(raw_content)
-            
+            if not content_text:
+                raise ValueError("JSON 추출 결과가 비어 있습니다.")
+                
             return DummyResponse(content_text)
             
         except requests.exceptions.RequestException as e:
