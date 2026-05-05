@@ -331,7 +331,7 @@ def filter_breaking_news(headlines, recent_news_list):
     try:
         response = safe_generate_content(prompt)
         if not response:
-            return []
+            return None
         text = response.text
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
@@ -370,7 +370,7 @@ def filter_breaking_news(headlines, recent_news_list):
         return valid_candidates
     except Exception as e:
         print(f"AI filtering error: {e}")
-        return []
+        return None
 
 def perform_deep_analysis(candidates, recent_news_list):
     """
@@ -480,7 +480,7 @@ def perform_deep_analysis(candidates, recent_news_list):
         
         if not response:
             print("⚠️ 모든 기사 AI 분석 실패 (Rate limits 또는 모델 에러).")
-            return []
+            return None
 
         text = response.text
         if "```json" in text:
@@ -510,6 +510,7 @@ def perform_deep_analysis(candidates, recent_news_list):
                 
     except Exception as e:
         print(f"Batch AI processing error: {e}")
+        return None
 
     return refined_items
 
@@ -590,15 +591,15 @@ def main():
                 title = h['title']
                 link = h.get('link', '')
                 
-                # [수정] 한 번이라도 목록에 나타난 URL은 즉시 메모리에 등록 (AI 전달 여부와 상관없이)
+                # 메모리 기반 중복 검사
                 if link in processed_news:
                     continue
-                
-                processed_news.append(link)
                 
                 if not is_already_saved(link):
                     new_headlines.append(h)
                 else:
+                    # DB에는 있지만 메모리에는 없던 뉴스라면, 다음 사이클 최적화를 위해 넣어둠
+                    processed_news.append(link)
                     print(f"  ⏭️ Skip (Already in DB): {title[:50]}...")
             
             # 3. DB에서 최근 보도된 뉴스 목록 가져오기 (문맥 파악 및 중복 방지용)
@@ -618,23 +619,35 @@ def main():
                 print(f"🔍 [Pass 1] Screening {len(unique_headlines)} headlines...")
                 candidates = filter_breaking_news(unique_headlines, recent_news_list)
                 
-                if candidates:
+                if candidates is None:
+                    print("⚠️ AI Pass 1 failed (Error/Rate Limit). Will retry next cycle.")
+                elif candidates:
                     # [2차] 본문 데이터 추출 및 심층 분석
                     print(f"🧐 [Pass 2] Deep analyzing {len(candidates)} candidates...")
                     final_items = perform_deep_analysis(candidates, recent_news_list)
                     
-                    # 5. 저장 및 알림 (최종 한국어 번역본으로 한 번 더 중복 검사)
-                    for item in final_items:
-                        if is_similar_title(item['title'], recent_news_list, threshold=0.55):
-                            print(f"  ⏭️ Skip (Final Similarity Cut): {item['title']} - 이미 발송된 유사 사건입니다.")
-                            continue
+                    if final_items is None:
+                        print("⚠️ AI Pass 2 failed. Will retry next cycle.")
+                    else:
+                        # 5. 저장 및 알림 (최종 한국어 번역본으로 한 번 더 중복 검사)
+                        for item in final_items:
+                            if is_similar_title(item['title'], recent_news_list, threshold=0.55):
+                                print(f"  ⏭️ Skip (Final Similarity Cut): {item['title']} - 이미 발송된 유사 사건입니다.")
+                                continue
+                                
+                            save_and_notify(item)
                             
-                        save_and_notify(item)
-                        
-                        # 방금 발송한 속보를 현재 리스트에도 추가하여, 같은 배치 내 연속 중복도 완벽하게 차단
-                        recent_news_list.append({"title": item['title'], "content": item.get('content', '')})
+                            # 방금 발송한 속보를 현재 리스트에도 추가하여, 같은 배치 내 연속 중복도 완벽하게 차단
+                            recent_news_list.append({"title": item['title'], "content": item.get('content', '')})
+                            
+                        # 전체 과정이 에러 없이 무사히 완료된 경우에만 이번 후보들을 중복 메모리에 추가 (누락 방지)
+                        for h in unique_headlines:
+                            processed_news.append(h.get('link', ''))
                 else:
                     print("🍃 No high-impact candidates found by titles.")
+                    # 정상적으로 모두 기각된 경우, 중복 메모리 추가
+                    for h in unique_headlines:
+                        processed_news.append(h.get('link', ''))
             else:
                 print("💤 No new/unique headlines to analyze.")
             
