@@ -17,8 +17,8 @@ def safe_generate_content(prompt_text, max_retries=10):
     OpenRouter API 브로커 (DeepSeek V3 메인 + Gemini 2.5 Flash 백업)
     """
     # 환경 변수 및 설정
-    AI_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")#google/gemini-2.5-flash-lite,nvidia/nemotron-3-super-120b-a12b:free
-    BACKUP_MODEL_NAME = os.getenv("OPENROUTER_BACKUP_MODEL", "google/gemini-2.5-flash")
+    AI_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")#
+    BACKUP_MODEL_NAME = os.getenv("OPENROUTER_BACKUP_MODEL", "mistralai/mistral-nemo")# google/gemini-2.5-flash-lite,nvidia/nemotron-3-super-120b-a12b:free
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
     if not OPENROUTER_API_KEY:
