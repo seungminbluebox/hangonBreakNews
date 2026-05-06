@@ -343,7 +343,7 @@ def filter_breaking_news(headlines, recent_news_list):
             return []
             
         try:
-            candidates = json.loads(text)
+            candidates = json.loads(text, strict=False)
         except json.JSONDecodeError as e:
             print(f"JSON 파싱 에러. 원본 텍스트: {text}")
             raise e
@@ -486,7 +486,7 @@ def perform_deep_analysis(candidates, recent_news_list):
         elif "```" in text:
             text = text.split("```")[1].split("```")[0]
 
-        ai_results = json.loads(text.strip())
+        ai_results = json.loads(text.strip(), strict=False)
         
         # 3. AI가 생성한 결과물과 기존에 가지고 있던 URL/Image 매핑
         for result in ai_results:
