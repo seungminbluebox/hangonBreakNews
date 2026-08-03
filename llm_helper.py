@@ -12,13 +12,22 @@ class DummyResponse:
     def __init__(self, text):
         self.text = text
 
-def safe_generate_content(prompt_text, max_retries=10):
+def safe_generate_content(
+    prompt_text,
+    max_retries=10,
+    *,
+    model_name=None,
+    backup_model_name=None,
+    response_format=None,
+    provider_preferences=None,
+    request_timeout=120,
+):
     """
     OpenRouter API 브로커 (DeepSeek V3 메인 + Gemini 2.5 Flash 백업)
     """
     # 환경 변수 및 설정
-    AI_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "openrouter/free")#
-    BACKUP_MODEL_NAME = os.getenv("OPENROUTER_BACKUP_MODEL", "openrouter/free")# google/gemini-2.5-flash-lite,nvidia/nemotron-3-super-120b-a12b:free
+    AI_MODEL_NAME = model_name or os.getenv("OPENROUTER_MODEL_NAME", "openrouter/free")#
+    BACKUP_MODEL_NAME = backup_model_name or os.getenv("OPENROUTER_BACKUP_MODEL", "openrouter/free")# google/gemini-2.5-flash-lite,nvidia/nemotron-3-super-120b-a12b:free
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
     if not OPENROUTER_API_KEY:
@@ -71,9 +80,13 @@ def safe_generate_content(prompt_text, max_retries=10):
             "max_tokens": 2000,
             "temperature": 0.2
         }
+        if response_format is not None:
+            data["response_format"] = response_format
+        if provider_preferences is not None:
+            data["provider"] = provider_preferences
         
         try:
-            res = requests.post(url, headers=headers, json=data, timeout=120)
+            res = requests.post(url, headers=headers, json=data, timeout=request_timeout)
             res.raise_for_status() 
             
             result_json = res.json()

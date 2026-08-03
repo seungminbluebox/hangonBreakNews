@@ -35,8 +35,16 @@ git pull origin main
 # 환율 트래커를 위해 finance-datareader, pandas가 포함되어야 합니다.
 pip install -r requirements.txt
 
-# 3. PM2 프로세스 재시작 (변경사항 반영)
-pm2 restart breaking-news
+# 3. DB에 쓰지 않는 1회 점검
+python gnews_tracker.py --dry-run
+
+# 4. 기존 RSS 트래커를 중지하고 GNews 트래커로 교체
+pm2 stop breaking-news
+pm2 delete breaking-news
+pm2 start gnews_tracker.py --name breaking-news --interpreter ./venv/bin/python
+pm2 save
+
+# 다른 트래커 재시작
 pm2 restart exchange-monitor
 pm2 restart kospi-night
 
@@ -110,13 +118,18 @@ df -h
 | `pm2 logs --lines 100` | 최근 로그 100줄씩 몰아보기             |
 | `pm2 restart all`      | 모든 서비스 한 번에 재시작             |
 | `pm2 save`             | 현재 실행 상태 저장 (재부팅 대비 필수) |
-| `cat .env`             | 설정된 API 키 및 환경 변수 확인        |
+| `grep -E '^[A-Z0-9_]+=' .env \| cut -d= -f1` | 값 노출 없이 환경 변수 이름만 확인 |
 
 ---
 
 ## 6. 주의 사항
 
 - **프로세스 명칭**: 기존 `tracker`는 `breaking-news`로 이름이 변경되었습니다-
+- **실행 파일**: `gnews_tracker.py`가 운영 파일이며 기본 5분 주기로 실행됩니다. `breaking_tracker.py`는 롤백용으로만 남겨 둡니다.
+- **DB 호환성**: 기존 `breaking_news` 테이블만 사용하므로 이번 교체에 DB 마이그레이션은 없습니다.
+- **중복 기준**: `breaking_news.original_url`이 완전히 같은 기사만 차단합니다.
+- **필수 환경 변수 이름**: `GNEWS_API_KEY`, `OPENROUTER_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`
+- **선택 환경 변수 이름**: `GNEWS_AI_MODEL_NAME`, `GNEWS_AI_BACKUP_MODEL`, `GNEWS_DAILY_SAFETY_LIMIT`, `REVALIDATE_SECRET`, `FRONTEND_URL`, `FIREBASE_CREDENTIALS`
 - **메모리 부족**: 현재 2GB Swap이 설정되어 있으나, 3개 이상의 코드를 돌릴 시 `free -h` 명령어로 여유 메모리를 꼭 체크하세요-
 - **디스크 용량**: 20GB로 확장되었으므로 넉넉하지만, `df -h`에서 `Use%`가 80%를 넘지 않게 관리해 주세요-
 
