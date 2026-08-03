@@ -80,6 +80,7 @@ OBVIOUS_ANALYSIS_TITLE_PHRASES = (
     "faces new threats",
     "faces new competition",
     "may offer some protection",
+    "investing lessons",
     "the effect of",
     "consortium study",
     "ahead of",
@@ -111,6 +112,19 @@ MINOR_CARD_CHANGE_MARKERS = (
     "혜택 개편",
     "포인트 변경",
     "마일리지 변경",
+)
+SUMMARY_PLACEHOLDER_PHRASES = (
+    "text_too_short",
+    "n/a",
+    "내용이 부족",
+    "본문이 부족",
+    "정보가 부족",
+    "요약 불가",
+    "요약할 수 없",
+)
+SUMMARY_FORBIDDEN_TEMPLATE_PHRASES = (
+    "시장 영향:",
+    "관전 포인트",
 )
 ENGLISH_NUMBER_WORDS = {
     "zero": "0",
@@ -159,6 +173,26 @@ def _is_minor_card_product_change(article: dict) -> bool:
     ).casefold()
     return any(marker in text for marker in CARD_PRODUCT_MARKERS) and any(
         marker in text for marker in MINOR_CARD_CHANGE_MARKERS
+    )
+
+
+def _is_valid_report_summary(content: str) -> bool:
+    normalized = content.strip().casefold()
+    if "~" in content:
+        return False
+    if any(phrase in normalized for phrase in SUMMARY_PLACEHOLDER_PHRASES):
+        return False
+    if any(phrase in content for phrase in SUMMARY_FORBIDDEN_TEMPLATE_PHRASES):
+        return False
+
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", content.strip())
+        if sentence.strip()
+    ]
+    return 1 <= len(sentences) <= 2 and all(
+        re.search(r"(?:습니다|니다)[.!?]?$", sentence) is not None
+        for sentence in sentences
     )
 
 
@@ -320,6 +354,9 @@ def _selection_prompt(candidates: list[dict]) -> str:
 속보일 필요는 없습니다. 의미 있는 새 경제 소식이면 모두 선택하세요. 기사에 있는 사실만 사용하세요.
 선택하려면 누가 무엇을 새로 발표·결정·변경했거나 어떤 사건이 새로 발생했는지 명확히 말할 수 있어야 합니다.
 요약은 핵심 사실과 주요 수치·시점을 먼저 쓰고 110자 이내의 1~2문장으로 작성하세요.
+요약의 모든 문장은 뉴스 독자에게 보고하듯 자연스러운 정중한 보고체로 쓰고 `했습니다.`, `됐습니다.`, `입니다.`처럼 끝내세요. 제목처럼 `상승`, `발표` 같은 명사형으로 끝내지 마세요.
+기사 정보가 부족하면 `TEXT_TOO_SHORT`, `N/A`, `내용이 부족합니다` 같은 대체 문구를 만들지 말고 해당 기사를 선택 결과에서 제외하세요.
+`시장 영향:`, `관전 포인트` 같은 상투적 해설을 덧붙이거나 물결표가 포함된 `~입니다`를 기계적으로 붙이지 마세요.
 기사에 직접 명시된 시장 반응만 덧붙이고, 원문에 없는 전망·인과관계·투자 판단이나 상투적인 시장 영향 문구를 만들지 마세요.
 원문의 숫자와 단위를 그대로 사용하고 임의로 환산하거나 새로운 숫자를 만들지 마세요.
 중요도 9~10은 주요국 중앙은행·정부의 중대 정책, 전쟁·금융시스템 충격, 세계적 대기업의 중대 사건에만 사용하세요.
@@ -445,6 +482,13 @@ def select_and_summarize(
         if not _contains_korean(title) or not _contains_korean(content):
             LOGGER.warning(
                 "Discarding AI decision that is not Korean: source_ref=%s",
+                source_ref,
+            )
+            continue
+        if not _is_valid_report_summary(content):
+            LOGGER.warning(
+                "Discarding AI decision with invalid report-style summary: "
+                "source_ref=%s",
                 source_ref,
             )
             continue

@@ -64,7 +64,7 @@ class NewsSelectorTests(unittest.TestCase):
                     "source_ref": "earnings-1",
                     "source_title": "Chipmaker reports quarterly earnings",
                     "title": "반도체 기업 매출 18% 증가 📈",
-                    "content": "분기 실적 발표에서 매출이 18% 증가했다.",
+                    "content": "분기 실적 발표에서 매출이 18% 증가했습니다.",
                     "importance_score": 7,
                     "category": "corporate",
                     "news_type": "new_development",
@@ -91,7 +91,7 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(selected[0]["normalized_title"], "반도체 기업 매출 18% 증가 📈")
         self.assertEqual(
             selected[0]["normalized_content"],
-            "분기 실적 발표에서 매출이 18% 증가했다.",
+            "분기 실적 발표에서 매출이 18% 증가했습니다.",
         )
         self.assertEqual(selected[0]["original_url"], "https://example.com/earnings")
         self.assertEqual(selected[0]["news_type"], "new_development")
@@ -312,6 +312,12 @@ class NewsSelectorTests(unittest.TestCase):
                 "An analyst suggests stocks as downside protection.",
                 "https://example.com/analysis-14",
             ),
+            article(
+                "analysis-15",
+                "3 Investing Lessons From Implosion of a Hedge Fund",
+                "An article extracting investing lessons from an older event.",
+                "https://example.com/analysis-15",
+            ),
         ]
         generator = FakeGenerator(
             """[
@@ -347,6 +353,7 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertNotIn("The effect of", generator.prompts[0])
         self.assertNotIn("ahead of EU deadline", generator.prompts[0])
         self.assertNotIn("may offer some protection", generator.prompts[0])
+        self.assertNotIn("Investing Lessons", generator.prompts[0])
         self.assertIn("raising 2026 revenue guidance", generator.prompts[0])
 
     def test_excludes_analysis_only_sources_before_ai(self):
@@ -650,6 +657,126 @@ class NewsSelectorTests(unittest.TestCase):
         selected = select_and_summarize([source], generator)
 
         self.assertEqual(selected, [])
+
+    def test_rejects_summary_without_polite_report_ending(self):
+        source = article(
+            "market-rise",
+            "Wall Street rises on hopes of Middle East deal",
+            "The three major US indexes rose as hopes grew for easing Middle East tensions.",
+            "https://example.com/market-rise",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "market-rise",
+                "source_title": "Wall Street rises on hopes of Middle East deal",
+                "title": "중동 갈등 완화 기대감으로 뉴욕증시 상승",
+                "content": "미국-이란 갈등 완화 기대감에 뉴욕증시 3대 지수 상승",
+                "importance_score": 7,
+                "category": "market",
+                "news_type": "new_development",
+                "selection_reason": "중동 긴장 완화 기대감으로 주요 지수가 상승함"
+            }
+        ]"""
+        generator = FakeGenerator(response)
+
+        selected = select_and_summarize([source], generator)
+
+        self.assertEqual(selected, [])
+
+    def test_rejects_korean_placeholder_summary(self):
+        source = article(
+            "short-source",
+            "Company announces a business update",
+            "The company published a new business update.",
+            "https://example.com/short-source",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "short-source",
+                "source_title": "Company announces a business update",
+                "title": "기업, 사업 현황 발표",
+                "content": "기사 내용이 부족합니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "기업이 사업 현황을 발표함"
+            }
+        ]"""
+        generator = FakeGenerator(response)
+
+        selected = select_and_summarize([source], generator)
+
+        self.assertEqual(selected, [])
+
+    def test_rejects_machine_placeholder_with_korean_ending(self):
+        source = article(
+            "machine-placeholder",
+            "Company publishes a new filing",
+            "The company published a new filing today.",
+            "https://example.com/machine-placeholder",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "machine-placeholder",
+                "source_title": "Company publishes a new filing",
+                "title": "기업, 신규 공시 발표",
+                "content": "N/A입니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "기업이 신규 공시를 발표함"
+            }
+        ]"""
+        generator = FakeGenerator(response)
+
+        selected = select_and_summarize([source], generator)
+
+        self.assertEqual(selected, [])
+
+    def test_rejects_broken_market_impact_template(self):
+        source = article(
+            "spain-growth",
+            "Spanish economy beats growth expectations",
+            "Spain reported economic growth above market expectations.",
+            "https://example.com/spain-growth",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "spain-growth",
+                "source_title": "Spanish economy beats growth expectations",
+                "title": "스페인 경제 성장률 전망치 상회",
+                "content": "스페인 경제 성장률이 전망치를 웃돌았습니다. 시장 영향: 유럽 경제 회복이 관전 포인트입니다~입니다.",
+                "importance_score": 7,
+                "category": "indicator",
+                "news_type": "new_development",
+                "selection_reason": "스페인이 전망치를 웃도는 성장률을 발표함"
+            }
+        ]"""
+        generator = FakeGenerator(response)
+
+        selected = select_and_summarize([source], generator)
+
+        self.assertEqual(selected, [])
+
+    def test_prompt_defines_summary_quality_contract(self):
+        source = article(
+            "prompt-contract",
+            "Central bank announces a policy decision",
+            "The central bank published a new policy decision.",
+            "https://example.com/prompt-contract",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([source], generator)
+
+        prompt = generator.prompts[0]
+        self.assertIn("정중한 보고체", prompt)
+        self.assertIn("TEXT_TOO_SHORT", prompt)
+        self.assertIn("시장 영향:", prompt)
 
     def test_allows_calendar_date_from_published_at(self):
         source = article(
