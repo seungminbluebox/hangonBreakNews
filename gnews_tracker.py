@@ -311,15 +311,41 @@ def run_dry_run(
     clock=lambda: datetime.now(timezone.utc),
     sleeper=time.sleep,
     output=print,
+    batch_size=DEFAULT_AI_BATCH_SIZE,
 ):
     """Fetch once and print fields useful for reviewing source quality."""
+    output("GNews dry run: fetching Korea, US, and world business headlines...")
     client = client_factory(api_key=api_key)
     collected_articles = collector(
         client,
         fetched_at=clock(),
         sleeper=sleeper,
     )
-    articles = selector(collected_articles, generator)
+    batches = list(_chunks(collected_articles, batch_size))
+    output(
+        f"GNews dry run: fetched={len(collected_articles)} "
+        f"ai_batches={len(batches)}"
+    )
+    articles = []
+    failed_batches = 0
+    for batch_number, batch in enumerate(batches, start=1):
+        output(
+            f"GNews dry run: processing AI batch "
+            f"{batch_number}/{len(batches)} ({len(batch)} articles)..."
+        )
+        try:
+            articles.extend(selector(batch, generator))
+        except Exception as error:
+            failed_batches += 1
+            output(
+                f"GNews dry run: AI batch {batch_number}/{len(batches)} "
+                f"failed and was discarded: {error}"
+            )
+    if failed_batches:
+        output(
+            f"GNews dry run warning: {failed_batches}/{len(batches)} AI batch(es) "
+            "failed. No failed batch result will be stored."
+        )
     preview = [
         {
             "market_scope": item["market_scope"],
@@ -336,7 +362,7 @@ def run_dry_run(
         }
         for item in articles
     ]
-    output(json.dumps(preview, ensure_ascii=True, indent=2))
+    output(json.dumps(preview, ensure_ascii=False, indent=2))
     return articles
 
 

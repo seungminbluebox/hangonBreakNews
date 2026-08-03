@@ -68,7 +68,7 @@ class GNewsDryRunTests(unittest.TestCase):
         )
         selector.assert_called_once_with([article], generator)
         self.assertEqual(
-            json.loads(outputs[0]),
+            json.loads(outputs[-1]),
             [
                 {
                     "market_scope": "us",
@@ -85,8 +85,75 @@ class GNewsDryRunTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertNotIn("private-test-key", outputs[0])
-        outputs[0].encode("cp949")
+        self.assertIn("fetching", outputs[0])
+        self.assertIn("fetched=1", outputs[1])
+        self.assertIn("미국 경제 새 소식", outputs[-1])
+        self.assertNotIn("private-test-key", "\n".join(outputs))
+        outputs[-1].encode("utf-8")
+
+    def test_dry_run_keeps_later_batch_results_when_one_ai_batch_fails(self):
+        base_article = {
+            "provider": "gnews",
+            "source_id": "example.com",
+            "source_name": "Example News",
+            "source_tier": "unrated",
+            "source_url": "https://example.com",
+            "source_country": "us",
+            "published_at": "2026-08-03T01:00:00+00:00",
+            "updated_at": None,
+            "fetched_at": "2026-08-03T02:00:00+00:00",
+            "original_timezone": "UTC",
+            "original_language": "en",
+            "market_scope": "us",
+            "raw_description": "A new economic development.",
+            "raw_content": "The source article content.",
+            "normalized_title": None,
+            "normalized_content": None,
+            "image_url": None,
+        }
+        collected = [
+            {
+                **base_article,
+                "provider_article_id": f"article-{index}",
+                "original_url": f"https://example.com/article-{index}",
+                "raw_title": f"Economic headline {index}",
+            }
+            for index in range(11)
+        ]
+        selected_article = {
+            **collected[10],
+            "normalized_title": "경제 정책 발표",
+            "normalized_content": "새로운 경제 정책이 발표됐습니다.",
+            "importance_score": 8,
+            "category": "indicator",
+            "news_type": "official_announcement",
+            "selection_reason": "새 정책이 공식 발표됨",
+        }
+        selector = Mock(
+            side_effect=[
+                ValueError("unsafe first batch"),
+                [selected_article],
+            ]
+        )
+        outputs = []
+
+        result = run_dry_run(
+            "private-test-key",
+            Mock(),
+            client_factory=Mock(return_value=object()),
+            collector=Mock(return_value=collected),
+            selector=selector,
+            clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+            sleeper=Mock(),
+            output=outputs.append,
+        )
+
+        self.assertEqual(result, [selected_article])
+        self.assertEqual(selector.call_count, 2)
+        self.assertEqual(len(selector.call_args_list[0].args[0]), 10)
+        self.assertEqual(len(selector.call_args_list[1].args[0]), 1)
+        self.assertIn("batch 1/2 failed", "\n".join(outputs))
+        self.assertEqual(json.loads(outputs[-1])[0]["title"], "경제 정책 발표")
 
     def test_main_reuses_openrouter_generator_and_runs_once(self):
         generator = Mock()
