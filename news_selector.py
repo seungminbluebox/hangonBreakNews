@@ -98,6 +98,20 @@ EXCLUDED_FEED_SOURCE_IDS = {
     "cancernetwork.com",
     "www.cancernetwork.com",
 }
+CARD_PRODUCT_MARKERS = (" card", "카드")
+MINOR_CARD_CHANGE_MARKERS = (
+    "annual fee",
+    "higher fee",
+    "new benefits",
+    "benefit changes",
+    "rewards changes",
+    "welcome bonus",
+    "연회비",
+    "혜택 변경",
+    "혜택 개편",
+    "포인트 변경",
+    "마일리지 변경",
+)
 ENGLISH_NUMBER_WORDS = {
     "zero": "0",
     "one": "1",
@@ -136,6 +150,16 @@ def _is_obvious_analysis_title(title: str) -> bool:
 
 def _contains_korean(text: str) -> bool:
     return bool(re.search(r"[가-힣]", text))
+
+
+def _is_minor_card_product_change(article: dict) -> bool:
+    text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description")
+    ).casefold()
+    return any(marker in text for marker in CARD_PRODUCT_MARKERS) and any(
+        marker in text for marker in MINOR_CARD_CHANGE_MARKERS
+    )
 
 
 def _normalize_number(token: str) -> str:
@@ -336,6 +360,7 @@ def select_and_summarize(
         for index, article in enumerate(articles)
         if article.get("source_id") not in EXCLUDED_FEED_SOURCE_IDS
         and not _is_obvious_analysis_title(article["raw_title"])
+        and not _is_minor_card_product_change(article)
     ]
     if not candidate_indexes:
         return []

@@ -418,6 +418,30 @@ class NewsSelectorTests(unittest.TestCase):
             self.assertNotIn(f"blocked-{index}", generator.prompts[0])
         self.assertIn("trusted-news", generator.prompts[0])
 
+    def test_excludes_minor_card_product_changes_but_keeps_card_market_news(self):
+        minor_product_change = article(
+            "citi-card-benefits",
+            "Major Citi AAdvantage Executive Card Changes: Higher Fee, New Benefits",
+            "The annual fee is increasing and product benefits are changing.",
+            "https://example.com/citi-card-benefits",
+        )
+        market_news = article(
+            "card-delinquency",
+            "US credit card delinquency rate rises in latest quarter",
+            "The latest industry delinquency data was released.",
+            "https://example.com/card-delinquency",
+        )
+        generator = FakeGenerator("[]")
+
+        selected = select_and_summarize(
+            [minor_product_change, market_news],
+            generator,
+        )
+
+        self.assertEqual(selected, [])
+        self.assertNotIn("citi-card-benefits", generator.prompts[0])
+        self.assertIn("card-delinquency", generator.prompts[0])
+
     def test_rejects_ai_decisions_below_existing_storage_threshold(self):
         generator = FakeGenerator(
             """[
