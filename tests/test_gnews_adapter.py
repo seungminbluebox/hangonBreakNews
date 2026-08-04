@@ -341,7 +341,7 @@ class GNewsClientTests(unittest.TestCase):
 
 
 class DefaultFeedCollectionTests(unittest.TestCase):
-    def test_requests_more_korean_headlines_without_adding_an_api_call(self):
+    def test_requests_plan_maximum_for_all_scopes_without_adding_api_calls(self):
         client = Mock()
         client.fetch_top_headlines.return_value = []
         fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
@@ -358,7 +358,7 @@ class DefaultFeedCollectionTests(unittest.TestCase):
                 request.kwargs["max_articles"]
                 for request in client.fetch_top_headlines.call_args_list
             ],
-            [25, 10, 10],
+            [25, 25, 25],
         )
 
     def test_collects_three_scopes_with_free_plan_delay_and_exact_deduplication(self):

@@ -529,6 +529,68 @@ class NewsSelectorTests(unittest.TestCase):
             self.assertNotIn(item["provider_article_id"], generator.prompts[0])
         self.assertIn("isa-reform", generator.prompts[0])
 
+    def test_excludes_local_services_routine_hires_explainers_and_earnings_previews(self):
+        low_value_articles = [
+            article(
+                "airport-wheelchairs",
+                "Changi Airport rolls out autonomous wheelchairs in terminals 2 and 3",
+                "The airport introduced a passenger assistance service with SATS.",
+                "https://example.com/airport-wheelchairs",
+            ),
+            article(
+                "routine-md-hire",
+                "Markel names Allianz portfolio chief as London specialty managing director",
+                "The insurer filled a routine managing director role.",
+                "https://example.com/routine-md-hire",
+            ),
+            article(
+                "local-bottle-shop",
+                "Auckland CBD bottle shop ordered to shut down",
+                "A local liquor store received a closure order.",
+                "https://example.com/local-bottle-shop",
+            ),
+            article(
+                "consumer-study",
+                "The sneaky economics of healthwashing",
+                "A UC Davis study examined adulterated avocado oil products.",
+                "https://example.com/consumer-study",
+            ),
+            article(
+                "earnings-preview",
+                "SpaceX set to report first quarterly earnings after market close",
+                "The company will report results later today.",
+                "https://example.com/earnings-preview",
+            ),
+        ]
+        material_articles = [
+            article(
+                "energy-acquisition",
+                "TotalEnergies buys Shell European renewable energy business",
+                "The companies announced a completed acquisition of wind and solar assets.",
+                "https://example.com/energy-acquisition",
+            ),
+            article(
+                "reported-earnings",
+                "Chipmaker reports quarterly earnings after market close",
+                "Revenue and profit rose after the company released its results.",
+                "https://example.com/reported-earnings",
+            ),
+            article(
+                "ceo-succession",
+                "Insurer names regional head as chief executive officer",
+                "The board appointed its regional head as the company's new CEO.",
+                "https://example.com/ceo-succession",
+            ),
+        ]
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([*low_value_articles, *material_articles], generator)
+
+        for item in low_value_articles:
+            self.assertNotIn(item["provider_article_id"], generator.prompts[0])
+        for item in material_articles:
+            self.assertIn(item["provider_article_id"], generator.prompts[0])
+
     def test_excludes_recently_saved_same_event_but_keeps_distinct_company_news(self):
         boeing = article(
             "boeing-certification",
@@ -1097,6 +1159,35 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(
             selected[0]["normalized_content"],
             "닛산이 분기 흑자로 전환하고 연간 전망을 유지했습니다.",
+        )
+
+    def test_normalizes_auckland_transliteration(self):
+        source = article(
+            "auckland-port-investment",
+            "Auckland port approves major expansion investment",
+            "The port approved a major expansion to increase cargo capacity.",
+            "https://example.com/auckland-port-investment",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "auckland-port-investment",
+                "source_title": "Auckland port approves major expansion investment",
+                "title": "아크랜드 항만, 대규모 확장 투자 승인",
+                "content": "아크랜드 항만이 물류 처리 능력을 높이기 위한 대규모 확장 투자를 승인했습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "항만 운영사가 확장 투자를 승인했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["normalized_title"], "오클랜드 항만, 대규모 확장 투자 승인")
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "오클랜드 항만이 물류 처리 능력을 높이기 위한 대규모 확장 투자를 승인했습니다.",
         )
 
     def test_rejects_summary_without_polite_report_ending(self):

@@ -294,6 +294,68 @@ def _is_low_value_item(article: dict) -> bool:
         for marker in ("annual membership fee", "admirals club", "resort fee")
     ):
         return True
+    if (
+        "airport" in text
+        and "wheelchair" in text
+        and any(
+            marker in text
+            for marker in ("rolls out", "introduces", "launches", "deploys")
+        )
+    ):
+        return True
+    if (
+        any(
+            marker in text
+            for marker in (
+                "managing director",
+                "portfolio chief",
+                "regional head",
+                "division head",
+            )
+        )
+        and any(
+            marker in title
+            for marker in ("appoints", "appointed", "names", "named", "hires", "fills")
+        )
+        and not any(
+            marker in text
+            for marker in (
+                "chief executive officer",
+                "chief financial officer",
+                " ceo",
+                " cfo",
+            )
+        )
+    ):
+        return True
+    if (
+        any(marker in text for marker in ("bottle shop", "liquor store"))
+        and any(
+            marker in text
+            for marker in ("ordered to shut", "closure order", "shut down")
+        )
+    ):
+        return True
+    if "healthwashing" in text or (
+        any(marker in text for marker in ("study", "research"))
+        and any(marker in text for marker in ("avocado oil", "consumer product"))
+    ):
+        return True
+    if (
+        any(marker in text for marker in ("earnings", "results"))
+        and any(
+            marker in text
+            for marker in (
+                "set to report",
+                "will report",
+                "scheduled to report",
+                "due to report",
+                "expected to report",
+                "earnings preview",
+            )
+        )
+    ):
+        return True
     product_unit_context = any(
         marker in text
         for marker in (
@@ -385,6 +447,8 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
     ).casefold()
     if "nissan" in source_text:
         value = value.replace("니산", "닛산")
+    if "auckland" in source_text:
+        value = value.replace("아크랜드", "오클랜드")
     return value
 
 
@@ -739,6 +803,9 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 최근 저장 뉴스와 같은 사건이면 제외. 단, 합의·승인·완료·취소·새 수치처럼 상태가 실제로 달라진 후속 보도는 `follow_up`으로 선택
 - 새 발표나 조치가 없는 업계 전망·역사적 수준 평가, 단순 실험 연구, 개인용 멤버십·혜택·수수료 변경
 - 회사 실적·가이던스·시장점유율과 연결되지 않은 개별 상품 판매 기록, 정기 신고·납부 안내, 기업 순위·수상·명단 기사
+- 공항 편의 서비스 도입, 지역 상점 단속, 소비재 연구·생활 정보처럼 금융시장이나 주요 산업에 미치는 영향이 작은 기사
+- 최고경영자·최고재무책임자 교체가 아닌 통상적인 중간관리자 선임 기사
+- 실적 수치가 아직 발표되지 않은 실적 발표 예정·미리보기 기사
 
 속보일 필요는 없습니다. 의미 있는 새 경제 소식이면 모두 선택하세요. 기사에 있는 사실만 사용하세요.
 선택하려면 누가 무엇을 새로 발표·결정·변경했거나 어떤 사건이 새로 발생했는지 명확히 말할 수 있어야 합니다.

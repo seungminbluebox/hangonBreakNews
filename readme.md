@@ -128,8 +128,9 @@ df -h
 - **실행 파일**: `gnews_tracker.py`가 운영 파일이며 기본 5분 주기로 실행됩니다. `breaking_tracker.py`는 롤백용으로만 남겨 둡니다.
 - **DB 호환성**: 기존 `breaking_news` 테이블만 사용하므로 이번 교체에 DB 마이그레이션은 없습니다.
 - **수집 시간창**: GNews 요청과 응답 검증 모두 최근 3시간 이내 작성 기사만 허용합니다.
+- **회차별 후보량**: 한국·미국·세계에서 각각 최대 25건, 총 최대 75건을 3회 요청으로 가져옵니다.
 - **중복 기준**: 동일 URL과 최근 24시간 내 동일 사건을 차단하며, 새 수치·승인·완료·취소가 있는 후속 보도는 허용합니다. AI에는 최신 100건만 비교 문맥으로 전달하고 최대 300건은 저장 전 규칙 기반으로 다시 검사합니다.
-- **품질 기준**: 국가가 빠진 경제지표, 번역되지 않은 영문 일반어, 설명 없는 전문 약어, 단순 상품 판매 기록·기업 순위·정기 신고 안내는 저장하지 않습니다.
+- **품질 기준**: 국가가 빠진 경제지표, 번역되지 않은 영문 일반어, 설명 없는 전문 약어, 단순 상품 판매 기록·기업 순위·정기 신고 안내·지역 생활 서비스·통상적 중간관리자 선임·실적 발표 예고는 저장하지 않습니다.
 - **알림 기준**: 중요도 7~8은 `breaking_news`, 9~10은 `breaking_news`와 `important_breaking_news` 구독자에게 중복 없이 발송합니다.
 - **필수 환경 변수 이름**: `GNEWS_API_KEY`, `OPENROUTER_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`
 - **선택 환경 변수 이름**: `GNEWS_AI_MODEL_NAME`, `GNEWS_AI_BACKUP_MODEL`, `GNEWS_DAILY_SAFETY_LIMIT`, `REVALIDATE_SECRET`, `FRONTEND_URL`, `FIREBASE_CREDENTIALS`

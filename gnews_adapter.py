@@ -23,14 +23,14 @@ DEFAULT_FEEDS = (
         "country": "us",
         "language": "en",
         "category": "business",
-        "max_articles": 10,
+        "max_articles": 25,
     },
     {
         "market_scope": "world",
         "country": None,
         "language": "en",
         "category": "business",
-        "max_articles": 10,
+        "max_articles": 25,
     },
 )
 
