@@ -95,7 +95,7 @@ class ImportanceNormalizationTests(unittest.TestCase):
 
 
 class GNewsCycleTests(unittest.TestCase):
-    def test_supplies_recent_three_hour_news_to_duplicate_selection(self):
+    def test_supplies_recent_twenty_four_hour_news_to_duplicate_selection(self):
         source = article()
         recent_item = {
             "title": "FAA, 보잉 MAX 인증 발급",
@@ -122,7 +122,7 @@ class GNewsCycleTests(unittest.TestCase):
 
         self.assertEqual(
             repository.recent_queries,
-            [(fetched_at - timedelta(hours=3), 100)],
+            [(fetched_at - timedelta(hours=24), 300)],
         )
         selector.assert_called_once_with(
             [source],

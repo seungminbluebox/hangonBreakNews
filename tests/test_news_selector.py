@@ -494,6 +494,41 @@ class NewsSelectorTests(unittest.TestCase):
             self.assertNotIn(item["provider_article_id"], generator.prompts[0])
         self.assertIn("manufacturing-index", generator.prompts[0])
 
+    def test_excludes_promotional_milestones_rankings_and_routine_notices_before_ai(self):
+        low_value_articles = [
+            article(
+                "product-milestone",
+                "Bibigo salmon steak sales top 1.4 million since launch",
+                "CJ CheilJedang highlighted cumulative sales of one consumer product.",
+                "https://example.com/product-milestone",
+            ),
+            article(
+                "forbes-ranking",
+                "Malaysia companies named to Forbes Asia Best Under A Billion list",
+                "Nineteen companies were included in the annual ranking.",
+                "https://example.com/forbes-ranking",
+            ),
+            article(
+                "tax-reminder",
+                "Tax agency reminds 545,000 companies of interim corporate tax filing deadline",
+                "The agency repeated the regular August filing and payment schedule.",
+                "https://example.com/tax-reminder",
+            ),
+        ]
+        policy_news = article(
+            "isa-reform",
+            "South Korea unveils tax reform creating productive finance ISA",
+            "The government announced a new tax policy for domestic capital markets.",
+            "https://example.com/isa-reform",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([*low_value_articles, policy_news], generator)
+
+        for item in low_value_articles:
+            self.assertNotIn(item["provider_article_id"], generator.prompts[0])
+        self.assertIn("isa-reform", generator.prompts[0])
+
     def test_excludes_recently_saved_same_event_but_keeps_distinct_company_news(self):
         boeing = article(
             "boeing-certification",
@@ -617,6 +652,46 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertIn("중복 비교", generator.prompts[0])
         self.assertIn("사실 근거로 사용하지", generator.prompts[0])
 
+    def test_deduplicates_against_recent_item_beyond_ai_prompt_context(self):
+        source = article(
+            "boeing-duplicate",
+            "FAA certifies Boeing MAX aircraft",
+            "The FAA issued certification for Boeing's MAX aircraft.",
+            "https://example.com/boeing-duplicate",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "boeing-duplicate",
+                "source_title": "FAA certifies Boeing MAX aircraft",
+                "title": "FAA, 보잉 MAX 항공기 인증",
+                "content": "FAA가 보잉 MAX 항공기에 인증을 발급했습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "new_development",
+                "selection_reason": "FAA가 항공기 인증을 새로 발급했습니다."
+            }
+        ]"""
+        unrelated = [
+            {
+                "title": f"서로 다른 경제 소식 {index}",
+                "content": f"서로 다른 경제 사건 {index}이 발표됐습니다.",
+            }
+            for index in range(100)
+        ]
+        duplicate = {
+            "title": "미 FAA, 보잉 MAX 인증 발급",
+            "content": "미 연방항공청이 보잉 MAX 항공기에 인증을 발급했습니다.",
+        }
+
+        selected = select_and_summarize(
+            [source],
+            FakeGenerator(response),
+            recent_news=[*unrelated, duplicate],
+        )
+
+        self.assertEqual(selected, [])
+
     def test_rejects_ai_decisions_below_existing_storage_threshold(self):
         generator = FakeGenerator(
             """[
@@ -694,6 +769,100 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["provider_article_id"], "duplicate-2")
         self.assertEqual(selected[0]["source_name"], "Yonhap News")
+
+    def test_deduplicates_different_headlines_from_the_same_statistical_release(self):
+        short_report = article(
+            "short-term-note-record",
+            "Korea short-term note issuance rises 90.4% to a record",
+            "First-half short-term note issuance rose 90.4%.",
+            "https://example.com/short-term-note-record",
+        )
+        complete_report = article(
+            "corporate-financing-report",
+            "Korea stock and bond issuance falls while CP and short-term notes surge",
+            "The same first-half FSS release said CP rose 19% and short-term notes rose 90.4%.",
+            "https://example.com/corporate-financing-report",
+        )
+        generator = FakeGenerator(
+            """[
+                {
+                    "temp_id": 0,
+                    "source_ref": "short-term-note-record",
+                    "source_title": "Korea short-term note issuance rises 90.4% to a record",
+                    "title": "상반기 단기사채·CP 발행액 역대 최대",
+                    "content": "상반기 단기사채 발행액이 90.4% 증가했습니다.",
+                    "importance_score": 7,
+                    "category": "indicator",
+                    "news_type": "official_announcement",
+                    "selection_reason": "상반기 기업 자금조달 통계가 발표됐습니다."
+                },
+                {
+                    "temp_id": 1,
+                    "source_ref": "corporate-financing-report",
+                    "source_title": "Korea stock and bond issuance falls while CP and short-term notes surge",
+                    "title": "상반기 주식·채권 감소, CP·단기사채 급증",
+                    "content": "상반기 주식·회사채 발행은 줄고 CP·단기사채는 각각 19%, 90.4% 증가했습니다.",
+                    "importance_score": 7,
+                    "category": "indicator",
+                    "news_type": "official_announcement",
+                    "selection_reason": "상반기 기업 자금조달 통계가 발표됐습니다."
+                }
+            ]"""
+        )
+
+        selected = select_and_summarize([short_report, complete_report], generator)
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["corporate-financing-report"],
+        )
+
+    def test_keeps_distinct_indicators_with_the_same_country_month_and_value(self):
+        inflation = article(
+            "us-inflation",
+            "US consumer prices rise 3% in July",
+            "US consumer prices rose 3% in July.",
+            "https://example.com/us-inflation",
+        )
+        unemployment = article(
+            "us-unemployment",
+            "US unemployment rate reaches 3% in July",
+            "The US unemployment rate was 3% in July.",
+            "https://example.com/us-unemployment",
+        )
+        generator = FakeGenerator(
+            """[
+                {
+                    "temp_id": 0,
+                    "source_ref": "us-inflation",
+                    "source_title": "US consumer prices rise 3% in July",
+                    "title": "미국 7월 소비자물가 3% 상승",
+                    "content": "미국 7월 소비자물가가 3% 상승했습니다.",
+                    "importance_score": 8,
+                    "category": "indicator",
+                    "news_type": "official_announcement",
+                    "selection_reason": "미국 소비자물가가 새로 발표됐습니다."
+                },
+                {
+                    "temp_id": 1,
+                    "source_ref": "us-unemployment",
+                    "source_title": "US unemployment rate reaches 3% in July",
+                    "title": "미국 7월 실업률 3% 기록",
+                    "content": "미국 7월 실업률이 3%를 기록했습니다.",
+                    "importance_score": 8,
+                    "category": "indicator",
+                    "news_type": "official_announcement",
+                    "selection_reason": "미국 실업률이 새로 발표됐습니다."
+                }
+            ]"""
+        )
+
+        selected = select_and_summarize([inflation, unemployment], generator)
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["us-inflation", "us-unemployment"],
+        )
 
     def test_rejects_summary_bound_to_a_different_source_title(self):
         yen_article = article(
@@ -825,6 +994,110 @@ class NewsSelectorTests(unittest.TestCase):
         selected = select_and_summarize([source], generator)
 
         self.assertEqual(selected, [])
+
+    def test_rejects_macro_summary_that_omits_source_country(self):
+        source = article(
+            "korea-inflation",
+            "South Korea consumer prices rise 2.8% in July",
+            "South Korea reported that consumer prices rose 2.8% from a year earlier.",
+            "https://example.com/korea-inflation",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "korea-inflation",
+                "source_title": "South Korea consumer prices rise 2.8% in July",
+                "title": "7월 소비자물가 2.8%로 둔화",
+                "content": "7월 소비자물가가 전년 대비 2.8% 상승했습니다.",
+                "importance_score": 8,
+                "category": "indicator",
+                "news_type": "official_announcement",
+                "selection_reason": "새 소비자물가 통계가 발표됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_rejects_summary_with_untranslated_english_prose(self):
+        source = article(
+            "commodity-report",
+            "Goldman says China's metals dominance increases commodity volatility",
+            "The report said China's metals dominance can increase commodity volatility.",
+            "https://example.com/commodity-report",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "commodity-report",
+                "source_title": "Goldman says China's metals dominance increases commodity volatility",
+                "title": "골드만삭스, 중국 상품시장 영향 분석",
+                "content": "중국의 핵심 금속 공급망 dominance가 상품시장 변동성을 키운다고 밝혔습니다.",
+                "importance_score": 7,
+                "category": "market",
+                "news_type": "new_development",
+                "selection_reason": "새 상품시장 분석 보고서를 발표했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_rejects_unexplained_specialist_acronym(self):
+        source = article(
+            "gpif-management",
+            "Japan GPIF increases passive fund manager engagement to 62.6%",
+            "Japan's public pension fund said manager engagement reached 62.6%.",
+            "https://example.com/gpif-management",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "gpif-management",
+                "source_title": "Japan GPIF increases passive fund manager engagement to 62.6%",
+                "title": "GPIF, 패시브펀드 관리 강화",
+                "content": "일본 GPIF가 패시브펀드 관리자 참여를 62.6%로 높였습니다.",
+                "importance_score": 7,
+                "category": "market",
+                "news_type": "official_announcement",
+                "selection_reason": "새 운용 현황을 발표했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_normalizes_known_company_transliteration(self):
+        source = article(
+            "nissan-results",
+            "Nissan returns to quarterly profit and maintains outlook",
+            "Nissan returned to profit in the quarter and maintained its annual outlook.",
+            "https://example.com/nissan-results",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "nissan-results",
+                "source_title": "Nissan returns to quarterly profit and maintains outlook",
+                "title": "니산, 분기 흑자 전환 및 전망 유지",
+                "content": "니산이 분기 흑자로 전환하고 연간 전망을 유지했습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "새 분기 실적이 발표됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["normalized_title"], "닛산, 분기 흑자 전환 및 전망 유지")
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "닛산이 분기 흑자로 전환하고 연간 전망을 유지했습니다.",
+        )
 
     def test_rejects_summary_without_polite_report_ending(self):
         source = article(

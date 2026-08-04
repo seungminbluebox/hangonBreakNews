@@ -137,6 +137,85 @@ EVENT_TOKEN_SYNONYMS = (
     ("급등", "상승"),
     ("급락", "하락"),
 )
+EVENT_GENERIC_TOKENS = {
+    "상반기",
+    "하반기",
+    "발표",
+    "발표됐습니다",
+    "증가",
+    "증가했습니다",
+    "감소",
+    "감소했습니다",
+    "기록",
+    "최대",
+    "역대",
+    "급증",
+    "급감",
+    "상승",
+    "하락",
+    "지수",
+    "통계",
+    "수치",
+    "전년",
+    "전월",
+    "분기",
+    "연간",
+    "올해",
+    "신규",
+    "정부",
+    "기업",
+    "시장",
+}
+SPECIALIST_ACRONYMS_REQUIRING_EXPLANATION = {
+    "FSSAI",
+    "GPIF",
+    "KBRA",
+    "LIC",
+    "OFS",
+    "OGDC",
+    "PFII",
+}
+MACRO_SOURCE_TERMS = (
+    "consumer price",
+    "inflation",
+    "producer price",
+    "unemployment",
+    "payroll",
+    "employment",
+    "retail sales",
+    "manufacturing index",
+    "manufacturing activity",
+    "gross domestic product",
+    " gdp",
+    " pmi",
+    "wage",
+)
+SOURCE_GEOGRAPHY_PATTERNS = (
+    (r"\bnorth korea\b", ("북한", "조선민주주의인민공화국")),
+    (r"\b(?:south korea|republic of korea|korea)\b", ("한국", "대한민국", "국내")),
+    (r"\b(?:united states|u\.s\.?|us)\b", ("미국",)),
+    (r"\bchina\b", ("중국",)),
+    (r"\bjapan\b", ("일본",)),
+    (r"\bindia\b", ("인도",)),
+    (r"\b(?:eurozone|euro area)\b", ("유로존", "유로 지역")),
+    (r"\b(?:united kingdom|uk|britain)\b", ("영국",)),
+    (r"\bgermany\b", ("독일",)),
+    (r"\bfrance\b", ("프랑스",)),
+    (r"\bspain\b", ("스페인",)),
+    (r"\bitaly\b", ("이탈리아",)),
+    (r"\bcanada\b", ("캐나다",)),
+    (r"\baustralia\b", ("호주", "오스트레일리아")),
+    (r"\bnew zealand\b", ("뉴질랜드",)),
+    (r"\bindonesia\b", ("인도네시아",)),
+    (r"\bmalaysia\b", ("말레이시아",)),
+    (r"\bnigeria\b", ("나이지리아",)),
+    (r"\bpakistan\b", ("파키스탄",)),
+    (r"\bbrazil\b", ("브라질",)),
+    (r"\bmexico\b", ("멕시코",)),
+    (r"\brussia\b", ("러시아",)),
+    (r"\bsaudi arabia\b", ("사우디아라비아", "사우디")),
+    (r"\b(?:turkey|türkiye)\b", ("튀르키예", "터키")),
+)
 SUMMARY_PLACEHOLDER_PHRASES = (
     "text_too_short",
     "n/a",
@@ -203,6 +282,7 @@ def _is_minor_card_product_change(article: dict) -> bool:
 def _is_low_value_item(article: dict) -> bool:
     title = (article.get("raw_title") or "").casefold()
     description = (article.get("raw_description") or "").casefold()
+    text = f"{title} {description}"
     if "market outlook" in title and any(
         marker in title for marker in ("historical high", "what to expect")
     ):
@@ -214,11 +294,143 @@ def _is_low_value_item(article: dict) -> bool:
         for marker in ("annual membership fee", "admirals club", "resort fee")
     ):
         return True
+    product_unit_context = any(
+        marker in text
+        for marker in (
+            "since launch",
+            "cumulative",
+            "preorder",
+            " units",
+            "consumer product",
+            "사전판매",
+            "누적 판매",
+            "만 대",
+            "만개",
+        )
+    )
+    product_sales_story = product_unit_context and any(
+        marker in text
+        for marker in (" sales", " sold ", "preorder", "사전판매", "누적 판매")
+    ) and any(
+        marker in text
+        for marker in (
+            "since launch",
+            "cumulative",
+            "record",
+            "top ",
+            "surpass",
+            "신기록",
+            "역대",
+            "돌파",
+        )
+    )
+    material_company_context = any(
+        marker in text
+        for marker in (
+            "revenue",
+            "profit",
+            "earnings",
+            "guidance",
+            "market share",
+            "매출",
+            "영업이익",
+            "순이익",
+            "실적",
+            "가이던스",
+            "시장점유율",
+            "점유율",
+        )
+    )
+    if product_sales_story and not material_company_context:
+        return True
+    if (
+        any(
+            marker in text
+            for marker in ("forbes asia", "best under a billion", "포브스 아시아")
+        )
+        and any(
+            marker in text
+            for marker in (" list", "named", "ranking", "선정", "명단")
+        )
+    ):
+        return True
+    if (
+        any(
+            marker in text
+            for marker in ("interim corporate tax", "법인세 중간예납")
+        )
+        and any(
+            marker in text
+            for marker in (
+                "remind",
+                "filing deadline",
+                "payment schedule",
+                "신고·납부 안내",
+                "납부기한",
+            )
+        )
+    ):
+        return True
     return (
         "smartphone makers" in title
         and "hardware innovation" in title
         and "broad review" in description
     )
+
+
+def _normalize_known_korean_terms(article: dict, value: str) -> str:
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    ).casefold()
+    if "nissan" in source_text:
+        value = value.replace("니산", "닛산")
+    return value
+
+
+def _has_untranslated_english_prose(title: str, content: str) -> bool:
+    return bool(
+        re.search(r"(?<![A-Za-z])[a-z]{4,}(?![A-Za-z])", f"{title} {content}")
+    )
+
+
+def _has_unexplained_specialist_acronym(title: str, content: str) -> bool:
+    text = f"{title} {content}"
+    acronyms = set(
+        re.findall(r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]{2,7}(?![A-Za-z0-9])", text)
+    )
+    for acronym in acronyms & SPECIALIST_ACRONYMS_REQUIRING_EXPLANATION:
+        escaped = re.escape(acronym)
+        korean_first = re.search(
+            rf"[가-힣][가-힣·\s]{{1,30}}\(\s*{escaped}\s*\)",
+            text,
+        )
+        acronym_first = re.search(rf"\b{escaped}\s*\(\s*[가-힣]", text)
+        if not korean_first and not acronym_first:
+            return True
+    return False
+
+
+def _missing_source_geography(
+    article: dict,
+    title: str,
+    content: str,
+    category: str,
+) -> bool:
+    if category != "indicator":
+        return False
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    ).casefold()
+    if not any(term in source_text for term in MACRO_SOURCE_TERMS):
+        return False
+
+    summary_text = f"{title} {content}"
+    for source_pattern, korean_markers in SOURCE_GEOGRAPHY_PATTERNS:
+        if re.search(source_pattern, source_text):
+            return not any(marker in summary_text for marker in korean_markers)
+    return False
 
 
 def _is_valid_report_summary(content: str) -> bool:
@@ -291,10 +503,15 @@ def _is_same_event(first: dict, second: dict) -> bool:
         (first_content, second_content),
         (f"{first_title} {first_content}", f"{second_title} {second_content}"),
     )
-    return any(
+    return _has_shared_event_signature(
+        first_title,
+        first_content,
+        second_title,
+        second_content,
+    ) or any(
         left
         and right
-        and SequenceMatcher(None, left, right).ratio() >= 0.62
+        and SequenceMatcher(None, left, right).ratio() >= 0.7
         for left, right in comparisons
     )
 
@@ -310,6 +527,46 @@ def _event_tokens(value: str) -> set[str]:
     }
 
 
+def _event_numeric_tokens(value: str) -> set[str]:
+    numbers = set()
+    for token in _numeric_tokens(value):
+        if token.isdigit() and 1900 <= int(token) <= 2100:
+            continue
+        numbers.add(token)
+    return numbers
+
+
+def _distinctive_event_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in _event_tokens(value) - EVENT_GENERIC_TOKENS
+        if not re.match(r"^(?:(?:19|20)\d{2}년?|\d{1,2}월|\d+분기)$", token)
+    }
+
+
+def _has_shared_event_signature(
+    first_title: str,
+    first_content: str,
+    second_title: str,
+    second_content: str,
+) -> bool:
+    first_tokens = _distinctive_event_tokens(first_title)
+    second_tokens = _distinctive_event_tokens(second_title)
+    shared_tokens = first_tokens & second_tokens
+    token_overlap = (
+        len(shared_tokens) / min(len(first_tokens), len(second_tokens))
+        if first_tokens and second_tokens
+        else 0
+    )
+    if len(shared_tokens) >= 3 and token_overlap >= 0.5:
+        return True
+
+    shared_numbers = _event_numeric_tokens(
+        f"{first_title} {first_content}"
+    ) & _event_numeric_tokens(f"{second_title} {second_content}")
+    return len(shared_tokens) >= 2 and bool(shared_numbers)
+
+
 def _is_same_recent_event(article: dict, recent_item: dict) -> bool:
     current_title = article.get("normalized_title") or ""
     recent_title = recent_item.get("title") or ""
@@ -322,6 +579,14 @@ def _is_same_recent_event(article: dict, recent_item: dict) -> bool:
         else 0
     )
     if len(shared_tokens) >= 3 and token_overlap >= 0.65:
+        return True
+
+    if _has_shared_event_signature(
+        current_title,
+        article.get("normalized_content") or "",
+        recent_title,
+        recent_item.get("content") or "",
+    ):
         return True
 
     current_text = _similarity_text(current_title)
@@ -473,9 +738,13 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 후보 안에 동일 사건을 다룬 기사가 여러 개면 원문 정보가 가장 구체적인 하나만 선택
 - 최근 저장 뉴스와 같은 사건이면 제외. 단, 합의·승인·완료·취소·새 수치처럼 상태가 실제로 달라진 후속 보도는 `follow_up`으로 선택
 - 새 발표나 조치가 없는 업계 전망·역사적 수준 평가, 단순 실험 연구, 개인용 멤버십·혜택·수수료 변경
+- 회사 실적·가이던스·시장점유율과 연결되지 않은 개별 상품 판매 기록, 정기 신고·납부 안내, 기업 순위·수상·명단 기사
 
 속보일 필요는 없습니다. 의미 있는 새 경제 소식이면 모두 선택하세요. 기사에 있는 사실만 사용하세요.
 선택하려면 누가 무엇을 새로 발표·결정·변경했거나 어떤 사건이 새로 발생했는지 명확히 말할 수 있어야 합니다.
+경제 초급 독자도 주체를 알 수 있도록 국가·기관·기업 이름을 제목이나 요약에 명시하세요. 원문에 국가가 있는데 생략하지 마세요.
+일반 영어 단어를 한국어 문장에 남기지 말고 자연스럽게 번역하세요. GPIF·FSSAI·OFS처럼 낯선 약어는 한국어 기관명이나 뜻을 먼저 쓰고 괄호 안에 약어를 적으세요.
+직역하면 뜻이 어색한 금융·경영 용어는 한국에서 통용되는 표현으로 옮기고, 확신할 수 없으면 해당 기사를 제외하세요.
 요약은 핵심 사실과 주요 수치·시점을 먼저 쓰고 110자 이내의 1~2문장으로 작성하세요.
 요약의 모든 문장은 뉴스 독자에게 보고하듯 자연스러운 정중한 보고체로 쓰고 `했습니다.`, `됐습니다.`, `입니다.`처럼 끝내세요. 제목처럼 `상승`, `발표` 같은 명사형으로 끝내지 마세요.
 기사 정보가 부족하면 `TEXT_TOO_SHORT`, `N/A`, `내용이 부족합니다` 같은 대체 문구를 만들지 말고 해당 기사를 선택 결과에서 제외하세요.
@@ -485,7 +754,7 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 중요도 9~10은 긴급 속보로, 주요국 중앙은행·정부의 중대 정책, 전쟁·금융시스템 충격, 세계적 대기업의 중대 사건에만 사용하세요.
 중요도 7~8은 주요 경제 소식으로, 기업 실적·경제지표·정책·규제·산업 변화를 다루되 국가나 대형 시장에 직접 영향이 큰 경우에만 8을 사용하세요.
 
-[최근 3시간 저장 뉴스 - 중복 비교 전용]
+[최근 24시간 저장 뉴스 - 중복 비교 전용]
 {json.dumps(recent_news, ensure_ascii=False)}
 이 목록은 중복 비교에만 사용하세요. 새 기사의 번역·요약에서 사실 근거로 사용하지 마세요.
 
@@ -525,7 +794,7 @@ def select_and_summarize(
             "title": item.get("title") or "",
             "content": item.get("content") or "",
         }
-        for item in (recent_news or [])[:100]
+        for item in (recent_news or [])[:300]
         if item.get("title") or item.get("content")
     ]
 
@@ -557,7 +826,7 @@ def select_and_summarize(
             for index in batch_indexes
             for article in [articles[index]]
         ]
-        selection_prompt = _selection_prompt(candidates, recent_news_context)
+        selection_prompt = _selection_prompt(candidates, recent_news_context[:100])
         for selection_attempt in range(2):
             try:
                 response_text = _response_text(generator(selection_prompt))
@@ -617,9 +886,37 @@ def select_and_summarize(
             or not selection_reason.strip()
         ):
             continue
+        title = _normalize_known_korean_terms(articles[temp_id], title.strip())
+        content = _normalize_known_korean_terms(articles[temp_id], content.strip())
         if not _contains_korean(title) or not _contains_korean(content):
             LOGGER.warning(
                 "Discarding AI decision that is not Korean: source_ref=%s",
+                source_ref,
+            )
+            continue
+        if _has_untranslated_english_prose(title, content):
+            LOGGER.warning(
+                "Discarding AI decision with untranslated English prose: "
+                "source_ref=%s",
+                source_ref,
+            )
+            continue
+        if _has_unexplained_specialist_acronym(title, content):
+            LOGGER.warning(
+                "Discarding AI decision with unexplained specialist acronym: "
+                "source_ref=%s",
+                source_ref,
+            )
+            continue
+        if _missing_source_geography(
+            articles[temp_id],
+            title,
+            content,
+            category,
+        ):
+            LOGGER.warning(
+                "Discarding AI decision that omitted source geography: "
+                "source_ref=%s",
                 source_ref,
             )
             continue
@@ -646,8 +943,8 @@ def select_and_summarize(
             continue
 
         item = articles[temp_id].copy()
-        item["normalized_title"] = title.strip()
-        item["normalized_content"] = content.strip()
+        item["normalized_title"] = title
+        item["normalized_content"] = content
         item["importance_score"] = importance_score
         item["category"] = category
         item["news_type"] = news_type
