@@ -285,6 +285,26 @@ class GNewsClientTests(unittest.TestCase):
 
 
 class DefaultFeedCollectionTests(unittest.TestCase):
+    def test_requests_more_korean_headlines_without_adding_an_api_call(self):
+        client = Mock()
+        client.fetch_top_headlines.return_value = []
+        fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
+
+        collect_default_headlines(
+            client,
+            fetched_at=fetched_at,
+            sleeper=Mock(),
+        )
+
+        self.assertEqual(client.fetch_top_headlines.call_count, 3)
+        self.assertEqual(
+            [
+                request.kwargs["max_articles"]
+                for request in client.fetch_top_headlines.call_args_list
+            ],
+            [25, 10, 10],
+        )
+
     def test_collects_three_scopes_with_free_plan_delay_and_exact_deduplication(self):
         duplicate = normalized_item(
             "shared-article",

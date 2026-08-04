@@ -4,6 +4,7 @@ from unittest.mock import Mock, call
 
 from gnews_tracker import (
     DailyRequestBudget,
+    SupabaseBreakingNewsRepository,
     TrackerState,
     next_cycle_delay,
     normalize_importance,
@@ -51,13 +52,19 @@ def selected(source, score=8):
 
 
 class FakeRepository:
-    def __init__(self, existing_urls=(), failures=0):
+    def __init__(self, existing_urls=(), failures=0, recent_news=()):
         self.existing = set(existing_urls)
         self.failures = failures
+        self.recent = list(recent_news)
+        self.recent_queries = []
         self.saved = []
 
     def existing_urls(self, urls):
         return self.existing.intersection(urls)
+
+    def recent_news(self, since, limit=100):
+        self.recent_queries.append((since, limit))
+        return [item.copy() for item in self.recent]
 
     def save(self, news_item):
         if self.failures:
@@ -88,6 +95,78 @@ class ImportanceNormalizationTests(unittest.TestCase):
 
 
 class GNewsCycleTests(unittest.TestCase):
+    def test_supplies_recent_three_hour_news_to_duplicate_selection(self):
+        source = article()
+        recent_item = {
+            "title": "FAA, 보잉 MAX 인증 발급",
+            "content": "미 연방항공청이 보잉 MAX 인증을 발급했습니다.",
+            "created_at": "2026-08-03T01:00:00+00:00",
+        }
+        repository = FakeRepository(recent_news=[recent_item])
+        selector = Mock(return_value=[])
+        generator = Mock()
+        fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
+
+        run_cycle(
+            object(),
+            generator,
+            repository,
+            Mock(),
+            TrackerState(),
+            collector=Mock(return_value=[source]),
+            selector=selector,
+            clock=lambda: fetched_at,
+            sleeper=Mock(),
+            output=Mock(),
+        )
+
+        self.assertEqual(
+            repository.recent_queries,
+            [(fetched_at - timedelta(hours=3), 100)],
+        )
+        selector.assert_called_once_with(
+            [source],
+            generator,
+            recent_news=[recent_item],
+        )
+
+    def test_adds_saved_news_to_recent_context_for_later_ai_batches(self):
+        first = article("article-1", "https://example.com/article-1")
+        second = article("article-2", "https://example.com/article-2")
+        first_selected = selected(first)
+        selector_recent_contexts = []
+
+        def select_batch(batch, generator, *, recent_news):
+            selector_recent_contexts.append([item.copy() for item in recent_news])
+            if batch[0]["provider_article_id"] == "article-1":
+                return [first_selected]
+            return []
+
+        run_cycle(
+            object(),
+            Mock(),
+            FakeRepository(),
+            Mock(),
+            TrackerState(),
+            collector=Mock(return_value=[first, second]),
+            selector=select_batch,
+            clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+            sleeper=Mock(),
+            output=Mock(),
+            batch_size=1,
+        )
+
+        self.assertEqual(selector_recent_contexts[0], [])
+        self.assertEqual(
+            selector_recent_contexts[1],
+            [
+                {
+                    "title": first_selected["normalized_title"],
+                    "content": first_selected["normalized_content"],
+                }
+            ],
+        )
+
     def test_skips_exact_url_already_saved_in_breaking_news(self):
         duplicate = article()
         repository = FakeRepository(existing_urls=[duplicate["original_url"]])
@@ -217,6 +296,35 @@ class GNewsCycleTests(unittest.TestCase):
 
 
 class ExistingContractTests(unittest.TestCase):
+    def test_reads_only_recent_duplicate_context_from_existing_table(self):
+        query = Mock()
+        query.select.return_value = query
+        query.gte.return_value = query
+        query.order.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = Mock(
+            data=[
+                {
+                    "title": "기존 뉴스",
+                    "content": "기존 뉴스 내용입니다.",
+                    "created_at": "2026-08-03T01:00:00+00:00",
+                }
+            ]
+        )
+        client = Mock()
+        client.table.return_value = query
+        repository = SupabaseBreakingNewsRepository(client)
+        since = datetime(2026, 8, 2, 23, 0, tzinfo=timezone.utc)
+
+        result = repository.recent_news(since, limit=100)
+
+        self.assertEqual(result[0]["title"], "기존 뉴스")
+        client.table.assert_called_once_with("breaking_news")
+        query.select.assert_called_once_with("title,content,created_at")
+        query.gte.assert_called_once_with("created_at", since.isoformat())
+        query.order.assert_called_once_with("created_at", desc=True)
+        query.limit.assert_called_once_with(100)
+
     def test_maps_selected_article_to_existing_breaking_news_columns_only(self):
         row = to_breaking_news_row(selected(article(), score=9))
 

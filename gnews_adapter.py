@@ -15,18 +15,21 @@ DEFAULT_FEEDS = (
         "country": "kr",
         "language": "ko",
         "category": "business",
+        "max_articles": 25,
     },
     {
         "market_scope": "us",
         "country": "us",
         "language": "en",
         "category": "business",
+        "max_articles": 10,
     },
     {
         "market_scope": "world",
         "country": None,
         "language": "en",
         "category": "business",
+        "max_articles": 10,
     },
 )
 
@@ -106,7 +109,7 @@ def collect_default_headlines(
     fetched_at: datetime,
     sleeper=time.sleep,
     delay_seconds: float = 1.1,
-    max_articles: int = 10,
+    max_articles: int | None = None,
 ) -> list[dict]:
     """Fetch Korea, US, and world feeds sequentially and remove exact duplicates."""
     collected = []
@@ -114,9 +117,13 @@ def collect_default_headlines(
     seen_urls = set()
 
     for index, feed in enumerate(DEFAULT_FEEDS):
+        feed = feed.copy()
+        feed_max_articles = feed.pop("max_articles")
         articles = client.fetch_top_headlines(
             **feed,
-            max_articles=max_articles,
+            max_articles=(
+                max_articles if max_articles is not None else feed_max_articles
+            ),
             fetched_at=fetched_at,
         )
         for article in articles:

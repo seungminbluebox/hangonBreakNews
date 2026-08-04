@@ -113,6 +113,30 @@ MINOR_CARD_CHANGE_MARKERS = (
     "포인트 변경",
     "마일리지 변경",
 )
+MATERIAL_FOLLOW_UP_MARKERS = (
+    "합의",
+    "타결",
+    "승인",
+    "완료",
+    "확정",
+    "발효",
+    "취소",
+    "철회",
+    "재개",
+    "중단",
+    "상향",
+    "하향",
+    "확대",
+    "추가",
+)
+EVENT_TOKEN_SYNONYMS = (
+    ("연방항공청", "faa"),
+    ("국제 유가", "유가"),
+    ("원유 가격", "유가"),
+    ("원유", "유가"),
+    ("급등", "상승"),
+    ("급락", "하락"),
+)
 SUMMARY_PLACEHOLDER_PHRASES = (
     "text_too_short",
     "n/a",
@@ -173,6 +197,27 @@ def _is_minor_card_product_change(article: dict) -> bool:
     ).casefold()
     return any(marker in text for marker in CARD_PRODUCT_MARKERS) and any(
         marker in text for marker in MINOR_CARD_CHANGE_MARKERS
+    )
+
+
+def _is_low_value_item(article: dict) -> bool:
+    title = (article.get("raw_title") or "").casefold()
+    description = (article.get("raw_description") or "").casefold()
+    if "market outlook" in title and any(
+        marker in title for marker in ("historical high", "what to expect")
+    ):
+        return True
+    if re.match(r"^(researchers|scientists)\s+(turn|convert)\b", title):
+        return True
+    if any(
+        marker in title
+        for marker in ("annual membership fee", "admirals club", "resort fee")
+    ):
+        return True
+    return (
+        "smartphone makers" in title
+        and "hardware innovation" in title
+        and "broad review" in description
     )
 
 
@@ -254,6 +299,82 @@ def _is_same_event(first: dict, second: dict) -> bool:
     )
 
 
+def _event_tokens(value: str) -> set[str]:
+    normalized = value.casefold()
+    for original, replacement in EVENT_TOKEN_SYNONYMS:
+        normalized = normalized.replace(original, replacement)
+    return {
+        token
+        for token in re.findall(r"[0-9a-z가-힣]+", normalized)
+        if len(token) >= 2
+    }
+
+
+def _is_same_recent_event(article: dict, recent_item: dict) -> bool:
+    current_title = article.get("normalized_title") or ""
+    recent_title = recent_item.get("title") or ""
+    current_tokens = _event_tokens(current_title)
+    recent_tokens = _event_tokens(recent_title)
+    shared_tokens = current_tokens & recent_tokens
+    token_overlap = (
+        len(shared_tokens) / min(len(current_tokens), len(recent_tokens))
+        if current_tokens and recent_tokens
+        else 0
+    )
+    if len(shared_tokens) >= 3 and token_overlap >= 0.65:
+        return True
+
+    current_text = _similarity_text(current_title)
+    recent_text = _similarity_text(recent_title)
+    return bool(
+        current_text
+        and recent_text
+        and SequenceMatcher(None, current_text, recent_text).ratio() >= 0.82
+    )
+
+
+def _has_material_follow_up(article: dict, recent_item: dict) -> bool:
+    if article.get("news_type") != "follow_up":
+        return False
+    current_text = " ".join(
+        (
+            article.get("normalized_title") or "",
+            article.get("normalized_content") or "",
+        )
+    )
+    recent_text = " ".join(
+        (
+            recent_item.get("title") or "",
+            recent_item.get("content") or "",
+        )
+    )
+    if any(
+        marker in current_text and marker not in recent_text
+        for marker in MATERIAL_FOLLOW_UP_MARKERS
+    ):
+        return True
+    return bool(_numeric_tokens(current_text) - _numeric_tokens(recent_text))
+
+
+def _deduplicate_against_recent(
+    articles: list[dict],
+    recent_news: list[dict],
+) -> list[dict]:
+    unique = []
+    for article in articles:
+        duplicate = next(
+            (
+                recent_item
+                for recent_item in recent_news
+                if _is_same_recent_event(article, recent_item)
+            ),
+            None,
+        )
+        if duplicate is None or _has_material_follow_up(article, duplicate):
+            unique.append(article)
+    return unique
+
+
 def _source_completeness(article: dict) -> int:
     return sum(
         len(article.get(field) or "")
@@ -333,7 +454,7 @@ def _load_decisions(response_text: str, generator) -> list[dict]:
     return decisions
 
 
-def _selection_prompt(candidates: list[dict]) -> str:
+def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
     return f"""
 당신은 경제 뉴스 편집자입니다. 아래 후보 중 두 조건을 모두 충족하는 기사만 선택하세요.
 
@@ -350,6 +471,8 @@ def _selection_prompt(candidates: list[dict]) -> str:
 - 공식 통계나 정책 발표가 아닌 설문조사·연구 결과만 소개하는 기사
 - 지난달·지난 분기 사건에 대한 새로운 조치나 결과 없이 관계자의 평가만 추가한 기사
 - 후보 안에 동일 사건을 다룬 기사가 여러 개면 원문 정보가 가장 구체적인 하나만 선택
+- 최근 저장 뉴스와 같은 사건이면 제외. 단, 합의·승인·완료·취소·새 수치처럼 상태가 실제로 달라진 후속 보도는 `follow_up`으로 선택
+- 새 발표나 조치가 없는 업계 전망·역사적 수준 평가, 단순 실험 연구, 개인용 멤버십·혜택·수수료 변경
 
 속보일 필요는 없습니다. 의미 있는 새 경제 소식이면 모두 선택하세요. 기사에 있는 사실만 사용하세요.
 선택하려면 누가 무엇을 새로 발표·결정·변경했거나 어떤 사건이 새로 발생했는지 명확히 말할 수 있어야 합니다.
@@ -361,6 +484,10 @@ def _selection_prompt(candidates: list[dict]) -> str:
 원문의 숫자와 단위를 그대로 사용하고 임의로 환산하거나 새로운 숫자를 만들지 마세요.
 중요도 9~10은 주요국 중앙은행·정부의 중대 정책, 전쟁·금융시스템 충격, 세계적 대기업의 중대 사건에만 사용하세요.
 일반 기업 실적·산업 소식은 보통 7, 국가나 대형 시장에 직접 영향이 큰 경우에만 8을 사용하세요.
+
+[최근 3시간 저장 뉴스 - 중복 비교 전용]
+{json.dumps(recent_news, ensure_ascii=False)}
+이 목록은 중복 비교에만 사용하세요. 새 기사의 번역·요약에서 사실 근거로 사용하지 마세요.
 
 [후보]
 {json.dumps(candidates, ensure_ascii=False)}
@@ -387,10 +514,20 @@ def select_and_summarize(
     generator,
     *,
     batch_size: int = 10,
+    recent_news: list[dict] | None = None,
 ) -> list[dict]:
     """Keep new, economically relevant developments and summarize them in Korean."""
     if not articles:
         return []
+
+    recent_news_context = [
+        {
+            "title": item.get("title") or "",
+            "content": item.get("content") or "",
+        }
+        for item in (recent_news or [])[:100]
+        if item.get("title") or item.get("content")
+    ]
 
     candidate_indexes = [
         index
@@ -398,6 +535,7 @@ def select_and_summarize(
         if article.get("source_id") not in EXCLUDED_FEED_SOURCE_IDS
         and not _is_obvious_analysis_title(article["raw_title"])
         and not _is_minor_card_product_change(article)
+        and not _is_low_value_item(article)
     ]
     if not candidate_indexes:
         return []
@@ -419,7 +557,7 @@ def select_and_summarize(
             for index in batch_indexes
             for article in [articles[index]]
         ]
-        selection_prompt = _selection_prompt(candidates)
+        selection_prompt = _selection_prompt(candidates, recent_news_context)
         for selection_attempt in range(2):
             try:
                 response_text = _response_text(generator(selection_prompt))
@@ -517,4 +655,7 @@ def select_and_summarize(
         selected.append(item)
         seen_refs.add(source_ref)
 
-    return _deduplicate_selected(selected)
+    return _deduplicate_against_recent(
+        _deduplicate_selected(selected),
+        recent_news_context,
+    )

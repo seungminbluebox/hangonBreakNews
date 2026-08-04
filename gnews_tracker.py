@@ -7,7 +7,7 @@ user-facing title or summary.
 
 import argparse
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import partial
 import json
@@ -23,6 +23,8 @@ DEFAULT_GNEWS_AI_BACKUP_MODEL = "openrouter/free"
 DEFAULT_CYCLE_SECONDS = 300
 DEFAULT_DAILY_REQUEST_LIMIT = 950
 DEFAULT_AI_BATCH_SIZE = 10
+RECENT_DUPLICATE_WINDOW_HOURS = 3
+RECENT_DUPLICATE_LIMIT = 100
 
 
 @dataclass
@@ -115,6 +117,25 @@ class SupabaseBreakingNewsRepository:
                 if row.get("original_url")
             )
         return existing
+
+    def recent_news(self, since: datetime, limit=RECENT_DUPLICATE_LIMIT) -> list[dict]:
+        response = (
+            self.client.table("breaking_news")
+            .select("title,content,created_at")
+            .gte("created_at", since.isoformat())
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [
+            {
+                "title": row.get("title") or "",
+                "content": row.get("content") or "",
+                "created_at": row.get("created_at"),
+            }
+            for row in (response.data or [])
+            if row.get("title") or row.get("content")
+        ]
 
     def save(self, news_item: dict) -> bool:
         url = news_item["original_url"]
@@ -210,10 +231,24 @@ def run_cycle(
         state.remember_evaluated(url)
     stats["duplicates"] = len(duplicate_urls)
 
+    try:
+        recent_news = repository.recent_news(
+            fetched_at - timedelta(hours=RECENT_DUPLICATE_WINDOW_HOURS),
+            limit=RECENT_DUPLICATE_LIMIT,
+        )
+    except Exception as error:
+        recent_news = []
+        stats["db_failures"] += 1
+        output(f"Recent-news duplicate context unavailable; continuing: {error}")
+
     pending_articles = list(state.pending.values())
     for batch in _chunks(pending_articles, batch_size):
         try:
-            selected_articles = selector(batch, generator)
+            selected_articles = selector(
+                batch,
+                generator,
+                recent_news=recent_news,
+            )
         except Exception as error:
             stats["ai_failures"] += 1
             output(f"AI selection failed; {len(batch)} article(s) retained: {error}")
@@ -253,6 +288,12 @@ def run_cycle(
                 continue
 
             stats["saved"] += 1
+            recent_news.append(
+                {
+                    "title": selected_item["normalized_title"],
+                    "content": selected_item["normalized_content"],
+                }
+            )
             try:
                 publisher(selected_item)
             except Exception as error:

@@ -449,6 +449,174 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertNotIn("citi-card-benefits", generator.prompts[0])
         self.assertIn("card-delinquency", generator.prompts[0])
 
+    def test_excludes_low_value_outlooks_research_and_consumer_fee_changes(self):
+        low_value_articles = [
+            article(
+                "tanker-outlook",
+                "2026 Tanker Market Outlook: Rates Near Historical Highs",
+                "An outlook on whether historically high rates may continue.",
+                "https://example.com/tanker-outlook",
+            ),
+            article(
+                "milk-fuel-research",
+                "Researchers turn milk waste into renewable fuel",
+                "Researchers describe a new laboratory method.",
+                "https://example.com/milk-fuel-research",
+            ),
+            article(
+                "airline-membership-fee",
+                "American Airlines raises Admirals Club annual membership fee",
+                "The consumer lounge membership fee will increase.",
+                "https://example.com/airline-membership-fee",
+            ),
+            article(
+                "smartphone-trend",
+                "Smartphone makers step up hardware innovation",
+                "A broad review of foldable display competition.",
+                "https://example.com/smartphone-trend",
+            ),
+        ]
+        economic_release = article(
+            "manufacturing-index",
+            "US manufacturing index expands at fastest pace in four years",
+            "The latest official manufacturing index was released.",
+            "https://example.com/manufacturing-index",
+        )
+        generator = FakeGenerator("[]")
+
+        selected = select_and_summarize(
+            [*low_value_articles, economic_release],
+            generator,
+        )
+
+        self.assertEqual(selected, [])
+        for item in low_value_articles:
+            self.assertNotIn(item["provider_article_id"], generator.prompts[0])
+        self.assertIn("manufacturing-index", generator.prompts[0])
+
+    def test_excludes_recently_saved_same_event_but_keeps_distinct_company_news(self):
+        boeing = article(
+            "boeing-certification",
+            "FAA certifies Boeing MAX aircraft",
+            "The FAA issued certification for Boeing's MAX aircraft.",
+            "https://example.com/boeing-certification",
+        )
+        tesla = article(
+            "tesla-launch",
+            "Tesla launches Model Y L in the United States",
+            "Tesla launched its Model Y L vehicle in the United States.",
+            "https://example.com/tesla-launch",
+        )
+        generator = FakeGenerator(
+            """[
+                {
+                    "temp_id": 0,
+                    "source_ref": "boeing-certification",
+                    "source_title": "FAA certifies Boeing MAX aircraft",
+                    "title": "FAA, 보잉 MAX 항공기 인증",
+                    "content": "FAA가 보잉 MAX 항공기에 인증을 발급했습니다.",
+                    "importance_score": 8,
+                    "category": "corporate",
+                    "news_type": "new_development",
+                    "selection_reason": "FAA가 항공기 인증을 새로 발급했습니다."
+                },
+                {
+                    "temp_id": 1,
+                    "source_ref": "tesla-launch",
+                    "source_title": "Tesla launches Model Y L in the United States",
+                    "title": "테슬라, 미국서 모델 Y L 출시",
+                    "content": "테슬라가 미국에서 모델 Y L 차량을 출시했습니다.",
+                    "importance_score": 7,
+                    "category": "corporate",
+                    "news_type": "new_development",
+                    "selection_reason": "테슬라가 미국에서 신차를 출시했습니다."
+                }
+            ]"""
+        )
+        recent_news = [
+            {
+                "title": "미 FAA, 보잉 MAX 인증 발급",
+                "content": "미 연방항공청이 보잉 MAX 항공기에 인증을 발급했습니다.",
+                "created_at": "2026-08-03T01:00:00+00:00",
+            }
+        ]
+
+        selected = select_and_summarize(
+            [boeing, tesla],
+            generator,
+            recent_news=recent_news,
+        )
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["tesla-launch"],
+        )
+        self.assertIn("미 FAA, 보잉 MAX 인증 발급", generator.prompts[0])
+
+    def test_keeps_material_follow_up_to_a_recent_event(self):
+        source = article(
+            "boeing-complete",
+            "Boeing MAX certification process completed",
+            "The Boeing MAX certification process has been completed.",
+            "https://example.com/boeing-complete",
+        )
+        generator = FakeGenerator(
+            """[
+                {
+                    "temp_id": 0,
+                    "source_ref": "boeing-complete",
+                    "source_title": "Boeing MAX certification process completed",
+                    "title": "보잉 MAX 인증 절차 완료",
+                    "content": "보잉 MAX 항공기의 인증 절차가 완료됐습니다.",
+                    "importance_score": 8,
+                    "category": "corporate",
+                    "news_type": "follow_up",
+                    "selection_reason": "기존 인증 절차가 완료됐습니다."
+                }
+            ]"""
+        )
+
+        selected = select_and_summarize(
+            [source],
+            generator,
+            recent_news=[
+                {
+                    "title": "보잉 MAX 인증 절차 시작",
+                    "content": "보잉 MAX 항공기의 인증 절차가 시작됐습니다.",
+                    "created_at": "2026-08-03T01:00:00+00:00",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["boeing-complete"],
+        )
+
+    def test_recent_news_prompt_is_duplicate_context_not_a_summary_source(self):
+        source = article(
+            "new-policy",
+            "Government announces a new policy",
+            "The government announced a new economic policy.",
+            "https://example.com/new-policy",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize(
+            [source],
+            generator,
+            recent_news=[
+                {
+                    "title": "기존 금리 발표",
+                    "content": "중앙은행이 기준금리를 발표했습니다.",
+                }
+            ],
+        )
+
+        self.assertIn("기존 금리 발표", generator.prompts[0])
+        self.assertIn("중복 비교", generator.prompts[0])
+        self.assertIn("사실 근거로 사용하지", generator.prompts[0])
+
     def test_rejects_ai_decisions_below_existing_storage_threshold(self):
         generator = FakeGenerator(
             """[
