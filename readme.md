@@ -127,7 +127,9 @@ df -h
 - **프로세스 명칭**: 기존 `tracker`는 `breaking-news`로 이름이 변경되었습니다-
 - **실행 파일**: `gnews_tracker.py`가 운영 파일이며 기본 5분 주기로 실행됩니다. `breaking_tracker.py`는 롤백용으로만 남겨 둡니다.
 - **DB 호환성**: 기존 `breaking_news` 테이블만 사용하므로 이번 교체에 DB 마이그레이션은 없습니다.
-- **중복 기준**: `breaking_news.original_url`이 완전히 같은 기사만 차단합니다.
+- **수집 시간창**: GNews 요청과 응답 검증 모두 최근 3시간 이내 작성 기사만 허용합니다.
+- **중복 기준**: 동일 URL과 최근 3시간 내 동일 사건을 차단하며, 새 수치·승인·완료·취소가 있는 후속 보도는 허용합니다.
+- **알림 기준**: 중요도 7~8은 `breaking_news`, 9~10은 `breaking_news`와 `important_breaking_news` 구독자에게 중복 없이 발송합니다.
 - **필수 환경 변수 이름**: `GNEWS_API_KEY`, `OPENROUTER_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`
 - **선택 환경 변수 이름**: `GNEWS_AI_MODEL_NAME`, `GNEWS_AI_BACKUP_MODEL`, `GNEWS_DAILY_SAFETY_LIMIT`, `REVALIDATE_SECRET`, `FRONTEND_URL`, `FIREBASE_CREDENTIALS`
 - **메모리 부족**: 현재 2GB Swap이 설정되어 있으나, 3개 이상의 코드를 돌릴 시 `free -h` 명령어로 여유 메모리를 꼭 체크하세요-

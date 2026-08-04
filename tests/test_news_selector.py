@@ -945,6 +945,10 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertIn("정중한 보고체", prompt)
         self.assertIn("TEXT_TOO_SHORT", prompt)
         self.assertIn("시장 영향:", prompt)
+        self.assertIn("7~8", prompt)
+        self.assertIn("주요 경제 소식", prompt)
+        self.assertIn("9~10", prompt)
+        self.assertIn("긴급 속보", prompt)
 
     def test_allows_calendar_date_from_published_at(self):
         source = article(

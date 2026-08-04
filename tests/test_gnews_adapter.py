@@ -149,10 +149,66 @@ class GNewsClientTests(unittest.TestCase):
                 "lang": ["ko"],
                 "country": ["kr"],
                 "max": ["10"],
+                "from": ["2026-08-02T23:00:00Z"],
+                "to": ["2026-08-03T02:00:00Z"],
                 "apikey": ["test-key"],
             },
         )
         self.assertEqual(opener.call_args.kwargs, {"timeout": 15})
+
+    def test_discards_articles_older_than_the_three_hour_request_window(self):
+        response = FakeHttpResponse(
+            {
+                "totalArticles": 2,
+                "articles": [
+                    {
+                        "id": "outside-window",
+                        "title": "Old recap",
+                        "description": "An older article.",
+                        "content": "Published just outside the collection window.",
+                        "url": "https://example.com/outside-window",
+                        "image": None,
+                        "publishedAt": "2026-08-03T08:59:59Z",
+                        "lang": "en",
+                        "source": {
+                            "name": "Example News",
+                            "url": "https://example.com",
+                            "country": "us",
+                        },
+                    },
+                    {
+                        "id": "window-boundary",
+                        "title": "Current economic release",
+                        "description": "A current article.",
+                        "content": "Published at the collection window boundary.",
+                        "url": "https://example.com/window-boundary",
+                        "image": None,
+                        "publishedAt": "2026-08-03T09:00:00Z",
+                        "lang": "en",
+                        "source": {
+                            "name": "Example News",
+                            "url": "https://example.com",
+                            "country": "us",
+                        },
+                    },
+                ],
+            }
+        )
+        client = GNewsClient(api_key="test-key", opener=Mock(return_value=response))
+
+        articles = client.fetch_top_headlines(
+            market_scope="us",
+            country="us",
+            language="en",
+            category="business",
+            max_articles=10,
+            fetched_at=datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in articles],
+            ["window-boundary"],
+        )
 
     def test_retries_rate_limit_after_retry_after_delay(self):
         rate_limit_error = HTTPError(

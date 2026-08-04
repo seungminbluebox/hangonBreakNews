@@ -339,23 +339,47 @@ class ExistingContractTests(unittest.TestCase):
             },
         )
 
-    def test_revalidates_existing_pages_and_uses_existing_push_categories(self):
+    def test_regular_news_targets_realtime_news_subscribers(self):
+        for score in (7, 8):
+            with self.subTest(score=score):
+                push = Mock()
+
+                publish_breaking_news(
+                    selected(article(), score=score),
+                    revalidate=Mock(),
+                    push=push,
+                )
+
+                push.assert_called_once_with(
+                    title="[주요 경제 소식] 미국 경제지표 발표",
+                    body="미국에서 새로운 경제지표가 발표됐습니다.",
+                    url="/live",
+                    categories=("breaking_news",),
+                )
+
+    def test_urgent_news_targets_realtime_and_important_subscribers(self):
         revalidate = Mock()
-        push = Mock()
+        for score in (9, 10):
+            with self.subTest(score=score):
+                push = Mock()
+                revalidate.reset_mock()
 
-        publish_breaking_news(
-            selected(article(), score=9),
-            revalidate=revalidate,
-            push=push,
-        )
+                publish_breaking_news(
+                    selected(article(), score=score),
+                    revalidate=revalidate,
+                    push=push,
+                )
 
-        self.assertEqual(revalidate.call_args_list, [call("/live"), call("/")])
-        push.assert_called_once_with(
-            title="🚨[초긴급] 미국 경제지표 발표",
-            body="미국에서 새로운 경제지표가 발표됐습니다.",
-            url="/live",
-            category="important_breaking_news",
-        )
+                self.assertEqual(
+                    revalidate.call_args_list,
+                    [call("/live"), call("/")],
+                )
+                push.assert_called_once_with(
+                    title="🚨[긴급 속보] 미국 경제지표 발표",
+                    body="미국에서 새로운 경제지표가 발표됐습니다.",
+                    url="/live",
+                    categories=("breaking_news", "important_breaking_news"),
+                )
 
 
 class SchedulerAndQuotaTests(unittest.TestCase):

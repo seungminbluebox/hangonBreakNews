@@ -151,12 +151,11 @@ def publish_breaking_news(news_item: dict, *, revalidate, push) -> None:
     """Preserve the existing page refresh and notification contract."""
     score = normalize_importance(news_item["importance_score"])
     if score >= 9:
-        prefix = "🚨[초긴급]"
+        prefix = "🚨[긴급 속보]"
+        target_categories = ("breaking_news", "important_breaking_news")
     else:
-        prefix = "[속보]"
-    notification_category = (
-        "important_breaking_news" if score >= 8 else "breaking_news"
-    )
+        prefix = "[주요 경제 소식]"
+        target_categories = ("breaking_news",)
 
     revalidate("/live")
     revalidate("/")
@@ -164,7 +163,7 @@ def publish_breaking_news(news_item: dict, *, revalidate, push) -> None:
         title=f"{prefix} {news_item['normalized_title']}",
         body=news_item["normalized_content"],
         url="/live",
-        category=notification_category,
+        categories=target_categories,
     )
 
 

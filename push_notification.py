@@ -59,28 +59,67 @@ def is_quiet_time():
     now_kst = datetime.utcnow() + timedelta(hours=9)
     return 0 <= now_kst.hour < 9
 
-def send_push_notification(title, body, url="/", category=None, test_fcm_token=None):
+def send_push_notification(
+    title,
+    body,
+    url="/",
+    category=None,
+    test_fcm_token=None,
+    categories=None,
+):
     """
     특정 카테고리를 구독한 사용자에게 푸시 알림을 전송합니다.
     (하위 호환성을 위해 기존 pywebpush 방식과 신규 FCM 멀티캐스트를 병행하여 전송합니다.)
     """
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    target_categories = tuple(
+        dict.fromkeys(
+            value
+            for value in (
+                categories if categories is not None else ((category,) if category else ())
+            )
+            if value
+        )
+    )
     
     # 구독 정보 가져오기 (카테고리 필터링 적용)
     try:
-        # 기존 push_subscriptions 대신 새로운 fcm_subscriptions 테이블만 조회합니다.
-        query = supabase.table("fcm_subscriptions").select("*")
-        
         # 테스트 모드인 경우 특정 FCM 토큰을 가진 유저만 필터링
         if test_fcm_token:
-            query = query.eq("fcm_token", test_fcm_token)
+            response = (
+                supabase.table("fcm_subscriptions")
+                .select("*")
+                .eq("fcm_token", test_fcm_token)
+                .execute()
+            )
+            subscriptions = response.data
             print(f"테스트 모드: 특정 FCM 토큰({test_fcm_token[:10]}...)으로만 발송합니다.")
-        elif category:
-            query = query.eq(f"preferences->>{category}", "true")
-            print(f"카테고리 필터링 적용: {category}")
-            
-        response = query.execute()
-        subscriptions = response.data
+        elif target_categories:
+            subscriptions_by_recipient = {}
+            for target_category in target_categories:
+                response = (
+                    supabase.table("fcm_subscriptions")
+                    .select("*")
+                    .eq(f"preferences->>{target_category}", "true")
+                    .execute()
+                )
+                for subscription in response.data or []:
+                    recipient_key = subscription.get("fcm_token") or (
+                        f"id:{subscription.get('id')}"
+                    )
+                    subscriptions_by_recipient.setdefault(
+                        recipient_key,
+                        subscription,
+                    )
+            subscriptions = list(subscriptions_by_recipient.values())
+            print(f"카테고리 필터링 적용: {', '.join(target_categories)}")
+        else:
+            response = (
+                supabase.table("fcm_subscriptions")
+                .select("*")
+                .execute()
+            )
+            subscriptions = response.data
     except Exception as e:
         print(f"구독 정보를 불러오는 중 에러 발생: {e}")
         return
@@ -110,8 +149,13 @@ def send_push_notification(title, body, url="/", category=None, test_fcm_token=N
 
             # 에티켓 모드가 켜져 있고 밤 시간대인 경우 큐에 넣거나 속보는 취소
             if etiquette_enabled and quiet_mode:
-                if category in ["breaking_news", "important_breaking_news"]:
-                    print(f"에티켓 모드: 속보 알림( {category} ) 전송 안 함 (ID: {sub_record['id']})")
+                is_breaking_alert = any(
+                    target in ["breaking_news", "important_breaking_news"]
+                    for target in target_categories
+                )
+                if is_breaking_alert:
+                    category_label = ", ".join(target_categories)
+                    print(f"에티켓 모드: 속보 알림( {category_label} ) 전송 안 함 (ID: {sub_record['id']})")
                     continue
                 else:
                     if fcm_token:
@@ -142,7 +186,8 @@ def send_push_notification(title, body, url="/", category=None, test_fcm_token=N
             token_chunk = fcm_tokens_to_send[i:i + chunk_size]
             
             # 고유 태그 설정 (각 알림이 독립적으로 쌓이도록 타임스탬프 추가)
-            notification_tag = f"hangon-{category if category else 'upd'}-{int(time.time() * 1000)}"
+            category_label = "-".join(target_categories) or "upd"
+            notification_tag = f"hangon-{category_label}-{int(time.time() * 1000)}"
             
             # 메시지 구성 (완벽한 Data-only 메시지)
             message = messaging.MulticastMessage(

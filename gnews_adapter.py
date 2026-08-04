@@ -1,6 +1,6 @@
 """GNews API adapter with no database or notification side effects."""
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 
 
 GNEWS_TOP_HEADLINES_URL = "https://gnews.io/api/v4/top-headlines"
+DEFAULT_LOOKBACK_HOURS = 3
 DEFAULT_FEEDS = (
     {
         "market_scope": "kr",
@@ -61,11 +62,19 @@ class GNewsClient:
         max_articles: int,
         fetched_at: datetime,
     ) -> list[dict]:
+        fetched_at_utc = fetched_at.astimezone(timezone.utc)
+        window_start = fetched_at_utc - timedelta(hours=DEFAULT_LOOKBACK_HOURS)
+
+        def format_utc(value):
+            return value.isoformat(timespec="seconds").replace("+00:00", "Z")
+
         params = {
             "category": category,
             "lang": language,
             "country": country,
             "max": max_articles,
+            "from": format_utc(window_start),
+            "to": format_utc(fetched_at_utc),
             "apikey": self.api_key,
         }
         query = urlencode({key: value for key, value in params.items() if value is not None})
@@ -93,13 +102,18 @@ class GNewsClient:
                     raise
                 self.sleeper(float(2**attempt))
 
-        return [
+        normalized_articles = [
             normalize_article(
                 article,
                 market_scope=market_scope,
                 fetched_at=fetched_at,
             )
             for article in payload["articles"]
+        ]
+        return [
+            article
+            for article in normalized_articles
+            if datetime.fromisoformat(article["published_at"]) >= window_start
         ]
 
 
