@@ -671,6 +671,103 @@ class NewsSelectorTests(unittest.TestCase):
         for item in material_articles:
             self.assertIn(item["provider_article_id"], generator.prompts[0])
 
+    def test_excludes_minor_payment_rollouts_market_moves_and_future_plans_before_ai(self):
+        low_value_articles = [
+            article(
+                "retailer-crypto-payment",
+                "Dubai Duty Free introduces Crypto.com Pay",
+                "Eligible shoppers can use cryptocurrency at airport stores and online.",
+                "https://example.com/retailer-crypto-payment",
+            ),
+            article(
+                "routine-index-rise",
+                "Pakistan stock index jumps 2,581 points",
+                "The KSE-100 rose 1.46% on improved risk appetite and refinancing hopes.",
+                "https://example.com/routine-index-rise",
+            ),
+            article(
+                "recycling-executive-pay",
+                "Irish recycling body raises executive and board pay 16%",
+                "Re-Turn increased compensation for its chief executive and board members.",
+                "https://example.com/recycling-executive-pay",
+            ),
+            article(
+                "scheduled-starship-test",
+                "SpaceX plans Starship tower-catch test later this month",
+                "The company will attempt the test during a future flight.",
+                "https://example.com/scheduled-starship-test",
+            ),
+            article(
+                "organoid-guideline-goal",
+                "Korea aims for OECD adoption of organoid toxicity test by 2028",
+                "The method has not yet been adopted or approved.",
+                "https://example.com/organoid-guideline-goal",
+            ),
+        ]
+        material_articles = [
+            article(
+                "official-unemployment",
+                "New Zealand unemployment reaches 11-year high",
+                "The official unemployment rate rose to 5.6%.",
+                "https://example.com/official-unemployment",
+            ),
+            article(
+                "government-intervention",
+                "Government intervenes in foreign exchange market",
+                "Officials confirmed direct market intervention.",
+                "https://example.com/government-intervention",
+            ),
+        ]
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([*low_value_articles, *material_articles], generator)
+
+        for item in low_value_articles:
+            self.assertNotIn(item["provider_article_id"], generator.prompts[0])
+        for item in material_articles:
+            self.assertIn(item["provider_article_id"], generator.prompts[0])
+
+    def test_excludes_repackaged_old_event_but_keeps_new_followup_and_future_effective_date(self):
+        stale_event = article(
+            "stale-difc-rule",
+            "DIFC corporate regulation reform expands global access",
+            "On July 24, 2026, DIFC amended its corporate regulations.",
+            "https://example.com/stale-difc-rule",
+        )
+        stale_event["published_at"] = "2026-08-03T01:00:00+00:00"
+        new_followup = article(
+            "new-difc-enforcement",
+            "DIFC begins enforcement of corporate regulation reform today",
+            "Enforcement started today for rules adopted on July 24, 2026.",
+            "https://example.com/new-difc-enforcement",
+        )
+        new_followup["published_at"] = "2026-08-03T01:00:00+00:00"
+        future_effective_date = article(
+            "canada-device-rule",
+            "Canada finalizes medical device licensing reform",
+            "The final rule takes effect on December 14, 2026.",
+            "https://example.com/canada-device-rule",
+        )
+        future_effective_date["published_at"] = "2026-08-03T01:00:00+00:00"
+        quarter_end_date = article(
+            "quarter-end-date",
+            "Company reports second-quarter earnings",
+            "2026년 6월 30일 기준 분기 매출과 순이익을 발표했습니다.",
+            "https://example.com/quarter-end-date",
+        )
+        quarter_end_date["published_at"] = "2026-08-03T01:00:00+00:00"
+        generator = FakeGenerator("[]")
+
+        select_and_summarize(
+            [stale_event, new_followup, future_effective_date, quarter_end_date],
+            generator,
+        )
+
+        self.assertNotIn("stale-difc-rule", generator.prompts[0])
+        self.assertIn("new-difc-enforcement", generator.prompts[0])
+        self.assertIn("canada-device-rule", generator.prompts[0])
+        self.assertIn("quarter-end-date", generator.prompts[0])
+
     def test_excludes_recently_saved_same_event_but_keeps_distinct_company_news(self):
         boeing = article(
             "boeing-certification",
@@ -1511,6 +1608,116 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(
             selected[0]["normalized_content"],
             "메이뱅크는 에티카를 인수해 말레이시아·싱가포르에서 은행 채널을 통한 보험 판매를 강화했습니다.",
+        )
+
+    def test_normalizes_smrt_profit_name_and_singapore_dollar(self):
+        source = article(
+            "smrt-profit",
+            "SMRT Trains profit doubles to S$12.8 million",
+            "After-tax profit doubled while revenue increased 5.6%.",
+            "https://example.com/smrt-profit",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "smrt-profit",
+                "source_title": "SMRT Trains profit doubles to S$12.8 million",
+                "title": "SMRT 기계수익 12.8백만 달러로 두 배",
+                "content": "SMRT의 세후 이익이 12.8백만 달러로 두 배 증가하고 매출은 5.6% 늘었습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "철도 운영사의 실적이 발표됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            selected[0]["normalized_title"],
+            "SMRT 트레인스 순이익 12.8백만 싱가포르달러로 두 배",
+        )
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "SMRT 트레인스의 세후 이익이 12.8백만 싱가포르달러로 두 배 증가하고 매출은 5.6% 늘었습니다.",
+        )
+
+    def test_expands_isr_for_beginner_readers(self):
+        source = article(
+            "military-isr",
+            "Chinese military researchers use US AI models for drones and ISR",
+            "Researchers applied the models to drones, cyber warfare, and ISR systems.",
+            "https://example.com/military-isr",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "military-isr",
+                "source_title": "Chinese military researchers use US AI models for drones and ISR",
+                "title": "중국군, 드론·ISR용 AI 개발",
+                "content": "중국 군 연구진이 드론과 ISR 시스템 개발에 미국 AI 모델을 활용했습니다.",
+                "importance_score": 8,
+                "category": "geopolitics",
+                "news_type": "new_development",
+                "selection_reason": "중국 군 연구진의 미국 AI 모델 활용이 확인됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertIn("정보·감시·정찰(ISR)", selected[0]["normalized_title"])
+        self.assertIn("정보·감시·정찰(ISR)", selected[0]["normalized_content"])
+
+    def test_softens_test_environment_wording_and_removes_editorial_indicator_judgment(self):
+        safety_test = article(
+            "ai-safety-test",
+            "UK AI Security Institute observes harmful model actions during tests",
+            "Models inserted malicious code and sent spam in controlled evaluations.",
+            "https://example.com/ai-safety-test",
+        )
+        unemployment = article(
+            "nz-unemployment",
+            "New Zealand unemployment reaches 5.6%, highest in 11 years",
+            "The official quarterly unemployment rate increased to 5.6%.",
+            "https://example.com/nz-unemployment",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "ai-safety-test",
+                "source_title": "UK AI Security Institute observes harmful model actions during tests",
+                "title": "영국 AI 보안 테스트 중 모델 오작동",
+                "content": "영국 AI 보안 테스트 중 모델이 통제 범위를 벗어난 행동을 보였습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "new_development",
+                "selection_reason": "통제된 평가에서 문제 행동이 관찰됐습니다."
+            },
+            {
+                "temp_id": 1,
+                "source_ref": "nz-unemployment",
+                "source_title": "New Zealand unemployment reaches 5.6%, highest in 11 years",
+                "title": "뉴질랜드 실업률 11년 만에 최고",
+                "content": "뉴질랜드 실업률이 5.6%로 상승했습니다. 이는 노동시장 약화를 보여주는 중요한 지표입니다.",
+                "importance_score": 8,
+                "category": "indicator",
+                "news_type": "official_announcement",
+                "selection_reason": "공식 실업률이 새로 발표됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize(
+            [safety_test, unemployment],
+            FakeGenerator(response),
+        )
+
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "영국 AI 보안 테스트 중 모델이 시험 환경에서 문제 행동을 보였습니다.",
+        )
+        self.assertEqual(
+            selected[1]["normalized_content"],
+            "뉴질랜드 실업률이 5.6%로 상승했습니다.",
         )
 
     def test_rejects_summary_without_polite_report_ending(self):

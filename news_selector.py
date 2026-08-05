@@ -1,5 +1,6 @@
 """AI-assisted selection and Korean summarization for normalized news articles."""
 
+from datetime import datetime
 from difflib import SequenceMatcher
 import json
 import logging
@@ -261,6 +262,24 @@ ENGLISH_NUMBER_WORDS = {
     "november": "11",
     "december": "12",
 }
+EVENT_MONTH_NUMBERS = {
+    month: int(ENGLISH_NUMBER_WORDS[month])
+    for month in (
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    )
+}
+MAX_REPACKAGED_EVENT_AGE_DAYS = 3
 
 
 def _is_obvious_analysis_title(title: str) -> bool:
@@ -279,6 +298,88 @@ def _is_minor_card_product_change(article: dict) -> bool:
     ).casefold()
     return any(marker in text for marker in CARD_PRODUCT_MARKERS) and any(
         marker in text for marker in MINOR_CARD_CHANGE_MARKERS
+    )
+
+
+def _is_repackaged_old_event(article: dict) -> bool:
+    source_text = " ".join(
+        article.get(field) or "" for field in ("raw_title", "raw_description")
+    ).casefold()
+    if any(
+        marker in source_text
+        for marker in (
+            "today",
+            "now ",
+            "begins enforcement",
+            "started enforcement",
+            "takes effect",
+            "effective today",
+            "new enforcement",
+            "new court challenge",
+            "new filing",
+            "new data",
+            "latest update",
+            "오늘",
+            "시행 시작",
+            "발효",
+            "후속 조치",
+            "새 수치",
+        )
+    ):
+        return False
+
+    published_at = article.get("published_at") or ""
+    try:
+        published_date = datetime.fromisoformat(
+            published_at.replace("Z", "+00:00")
+        ).date()
+    except ValueError:
+        return False
+
+    event_dates = []
+    month_pattern = "|".join(EVENT_MONTH_NUMBERS)
+    for match in re.finditer(
+        rf"\bon\s+({month_pattern})\s+(\d{{1,2}})(?:,\s*(\d{{4}}))?",
+        source_text,
+    ):
+        month_name, day_text, year_text = match.groups()
+        year = int(year_text) if year_text else published_date.year
+        try:
+            event_date = published_date.replace(
+                year=year,
+                month=EVENT_MONTH_NUMBERS[month_name],
+                day=int(day_text),
+            )
+        except ValueError:
+            continue
+        if year_text is None and event_date > published_date:
+            event_date = event_date.replace(year=year - 1)
+        event_dates.append(event_date)
+
+    for match in re.finditer(
+        r"(?:(\d{4})년\s*)?(\d{1,2})월\s*(\d{1,2})일",
+        source_text,
+    ):
+        date_context = source_text[match.end() : match.end() + 20]
+        if any(marker in date_context for marker in ("기준", "마감", "종료")):
+            continue
+        year_text, month_text, day_text = match.groups()
+        year = int(year_text) if year_text else published_date.year
+        try:
+            event_date = published_date.replace(
+                year=year,
+                month=int(month_text),
+                day=int(day_text),
+            )
+        except ValueError:
+            continue
+        if year_text is None and event_date > published_date:
+            event_date = event_date.replace(year=year - 1)
+        event_dates.append(event_date)
+
+    return any(
+        (published_date - event_date).days > MAX_REPACKAGED_EVENT_AGE_DAYS
+        for event_date in event_dates
     )
 
 
@@ -461,6 +562,62 @@ def _is_low_value_item(article: dict) -> bool:
         and any(marker in text for marker in ("good month", "consistent with"))
     ):
         return True
+    if (
+        any(marker in text for marker in ("duty free", "retailer", "airport store"))
+        and any(
+            marker in text
+            for marker in ("crypto.com pay", "cryptocurrency payment", "crypto payment")
+        )
+        and any(marker in text for marker in ("introduces", "launches", "accepts"))
+    ):
+        return True
+    market_move = re.search(r"(\d+(?:\.\d+)?)%", text)
+    if (
+        market_move
+        and float(market_move.group(1)) <= 2.0
+        and any(
+            marker in text
+            for marker in ("stock index", "benchmark index", "kse-100", "psx")
+        )
+        and any(marker in text for marker in (" rose ", "jumps", "gains", "rally"))
+        and not any(
+            marker in text
+            for marker in (
+                "central bank",
+                "rate decision",
+                "market intervention",
+                "default",
+                "war",
+                "sanction",
+                "government decision",
+            )
+        )
+    ):
+        return True
+    if (
+        any(marker in text for marker in ("recycling body", "deposit return"))
+        and any(marker in text for marker in ("executive pay", "board pay", "compensation"))
+    ):
+        return True
+    if (
+        "starship" in text
+        and "test" in text
+        and any(
+            marker in text
+            for marker in ("plans", "will attempt", "scheduled", "later this month")
+        )
+    ):
+        return True
+    if (
+        "organoid" in text
+        and "oecd" in text
+        and any(marker in text for marker in ("aims", "target", "goal", "by 2028"))
+        and (
+            "not yet" in text
+            or not any(marker in text for marker in ("adopted", "approved"))
+        )
+    ):
+        return True
     product_unit_context = any(
         marker in text
         for marker in (
@@ -559,6 +716,33 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
         value = value.replace(
             "은행 주도의 배분을",
             "은행 채널을 통한 보험 판매를",
+        )
+    if "smrt trains" in source_text:
+        value = value.replace("SMRT 기계수익", "SMRT 트레인스 순이익")
+        value = value.replace("SMRT의 세후 이익", "SMRT 트레인스의 세후 이익")
+        value = value.replace("SMRT Trains", "SMRT 트레인스")
+        if "s$" in source_text:
+            value = re.sub(r"(?<!싱가포르)달러", "싱가포르달러", value)
+    if " isr" in f" {source_text}" and "정보·감시·정찰(ISR)" not in value:
+        value = re.sub(
+            r"(?<![A-Za-z])ISR(?![A-Za-z])",
+            "정보·감시·정찰(ISR)",
+            value,
+            flags=re.IGNORECASE,
+        )
+    if (
+        "security institute" in source_text
+        and any(marker in source_text for marker in ("test", "evaluation"))
+    ):
+        value = value.replace(
+            "통제 범위를 벗어난 행동을 보였습니다",
+            "시험 환경에서 문제 행동을 보였습니다",
+        )
+    if "unemployment" in source_text:
+        value = re.sub(
+            r"\s*이는 노동시장 약화를 보여주는 중요한 지표입니다\.",
+            "",
+            value,
         )
     return value
 
@@ -1061,12 +1245,15 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 대학 캠퍼스 개설, 제재 없는 단순 경고, 계정 차단, 결과나 합의가 없는 회의처럼 경제적 파급력이 작은 단발성 소식
 - 계약·고객·매출·생산·정부 도입처럼 상업적 결과가 확인되지 않은 제품·플랫폼 출시
 - 소비자 쇼핑 설문, 가능성만 설명한 보고서, 기업 가이던스가 아닌 일반 수요 전망
+- 개별 소매점의 결제수단 도입, 뚜렷한 새 원인이 없는 2% 안팎의 일반 지수 등락, 비핵심 기관의 경영진 보수 기사
+- 아직 실행되지 않은 시험 일정·장기 목표와 기사 작성일보다 3일 넘게 오래된 사건을 새 후속 사실 없이 다시 소개한 기사
 
 속보일 필요는 없습니다. 의미 있는 새 경제 소식이면 모두 선택하세요. 기사에 있는 사실만 사용하세요.
 선택하려면 누가 무엇을 새로 발표·결정·변경했거나 어떤 사건이 새로 발생했는지 명확히 말할 수 있어야 합니다.
 경제 초급 독자도 주체를 알 수 있도록 국가·기관·기업 이름을 제목이나 요약에 명시하세요. 원문에 국가가 있는데 생략하지 마세요.
 일반 영어 단어를 한국어 문장에 남기지 말고 자연스럽게 번역하세요. GPIF·FSSAI·OFS처럼 낯선 약어는 한국어 기관명이나 뜻을 먼저 쓰고 괄호 안에 약어를 적으세요.
 `boe/d` 같은 전문 단위는 `석유환산배럴/일`처럼 초급 독자가 뜻을 알 수 있게 풀어 쓰세요.
+`ISR`은 `정보·감시·정찰(ISR)`처럼 뜻을 먼저 설명하고, 현지 통화는 어느 나라 달러인지 명시하세요.
 직역하면 뜻이 어색한 금융·경영 용어는 한국에서 통용되는 표현으로 옮기고, 확신할 수 없으면 해당 기사를 제외하세요.
 요약은 핵심 사실과 주요 수치·시점을 먼저 쓰고 110자 이내의 1~2문장으로 작성하세요.
 퍼센트 수치를 쓸 때는 매출·순이익·생산량·가격처럼 무엇이 변했는지 반드시 같은 문장에 명시하세요. `40% 성장률`처럼 지표가 불분명한 표현은 금지합니다.
@@ -1074,6 +1261,7 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 기사 정보가 부족하면 `TEXT_TOO_SHORT`, `N/A`, `내용이 부족합니다` 같은 대체 문구를 만들지 말고 해당 기사를 선택 결과에서 제외하세요.
 `시장 영향:`, `관전 포인트` 같은 상투적 해설을 덧붙이거나 물결표가 포함된 `~입니다`를 기계적으로 붙이지 마세요.
 기사에 직접 명시된 시장 반응만 덧붙이고, 원문에 없는 전망·인과관계·투자 판단이나 상투적인 시장 영향 문구를 만들지 마세요.
+통제된 시험에서 관찰된 행동을 실제 시스템 탈출이나 현실 사고처럼 과장하지 말고, `중요한 지표입니다` 같은 편집자 평가를 덧붙이지 마세요.
 원문의 숫자와 단위를 그대로 사용하고 임의로 환산하거나 새로운 숫자를 만들지 마세요.
 기사 종류와 무관하게 `영향 범위`, `변화 규모`, `시장 즉시성` 세 기준으로 중요도를 판단하세요.
 - 7~8점은 주요 경제 소식, 9~10점은 화면과 알림에서 긴급 속보로 사용됩니다.
@@ -1139,6 +1327,7 @@ def select_and_summarize(
         if article.get("source_id") not in EXCLUDED_FEED_SOURCE_IDS
         and not _is_obvious_analysis_title(article["raw_title"])
         and not _is_minor_card_product_change(article)
+        and not _is_repackaged_old_event(article)
         and not _is_low_value_item(article)
     ]
     if not candidate_indexes:
