@@ -131,6 +131,9 @@ MATERIAL_FOLLOW_UP_MARKERS = (
 )
 EVENT_TOKEN_SYNONYMS = (
     ("연방항공청", "faa"),
+    ("미국주식시장", "미국 주식시장"),
+    ("역사적", "사상"),
+    ("고점", "최고치"),
     ("국제 유가", "유가"),
     ("원유 가격", "유가"),
     ("원유", "유가"),
@@ -283,6 +286,33 @@ def _is_low_value_item(article: dict) -> bool:
     title = (article.get("raw_title") or "").casefold()
     description = (article.get("raw_description") or "").casefold()
     text = f"{title} {description}"
+    material_company_context = any(
+        marker in text
+        for marker in (
+            "revenue",
+            "profit",
+            "earnings",
+            "guidance",
+            "market share",
+            "contract",
+            "customer",
+            "order",
+            "production",
+            "capacity",
+            "approval",
+            "매출",
+            "영업이익",
+            "순이익",
+            "실적",
+            "가이던스",
+            "시장점유율",
+            "점유율",
+            "계약",
+            "수주",
+            "생산",
+            "승인",
+        )
+    )
     if "market outlook" in title and any(
         marker in title for marker in ("historical high", "what to expect")
     ):
@@ -356,6 +386,81 @@ def _is_low_value_item(article: dict) -> bool:
         )
     ):
         return True
+    if "university" in text and "campus" in text and any(
+        marker in text for marker in (" opens ", "will open", "new campus")
+    ):
+        return True
+    if (
+        "report" in text
+        and any(marker in text for marker in (" could ", " may ", " can "))
+        and any(marker in text for marker in ("growth", "future", "potential"))
+    ):
+        return True
+    if (
+        any(marker in text for marker in ("account", "accounts"))
+        and any(marker in text for marker in ("blocks", "blocked", "disabled"))
+        and any(marker in text for marker in ("scam", "fraud", "abusive activity"))
+    ):
+        return True
+    if (
+        any(marker in title for marker in ("launches", "introduces", "unveils"))
+        and any(marker in text for marker in ("platform", "new product"))
+        and any(marker in text for marker in ("designed for", "optimized for"))
+        and not material_company_context
+        and not any(marker in text for marker in ("government", "federal"))
+    ):
+        return True
+    if (
+        any(marker in text for marker in ("survey", "poll"))
+        and any(marker in text for marker in ("consumer", "shopper", "respondent"))
+        and not any(marker in text for marker in ("consumer confidence", "소비자심리"))
+    ):
+        return True
+    if (
+        any(
+            marker in text
+            for marker in ("forecast to", "expected to grow", "is forecast", "outlook")
+        )
+        and any(marker in text for marker in ("demand", "growth", "market size"))
+        and not material_company_context
+    ):
+        return True
+    if (
+        "youtube" in text
+        and any(marker in text for marker in ("warns", "warning"))
+        and (
+            "no sanction" in text
+            or not any(
+                marker in text for marker in ("fine", "ban", "sanction", "new rule")
+            )
+        )
+    ):
+        return True
+    if (
+        "meeting" in text
+        and any(marker in text for marker in ("discussed", "discussion"))
+        and (
+            any(marker in text for marker in ("no decision", "no agreement"))
+            or not any(
+                marker in text
+                for marker in (
+                    "agreed",
+                    "approved",
+                    "signed",
+                    "adopted",
+                    "new framework",
+                    "new rule",
+                )
+            )
+        )
+    ):
+        return True
+    if (
+        any(marker in title for marker in ("calls", "describes"))
+        and any(marker in title for marker in ("sales decline", "sales drop"))
+        and any(marker in text for marker in ("good month", "consistent with"))
+    ):
+        return True
     product_unit_context = any(
         marker in text
         for marker in (
@@ -384,23 +489,6 @@ def _is_low_value_item(article: dict) -> bool:
             "신기록",
             "역대",
             "돌파",
-        )
-    )
-    material_company_context = any(
-        marker in text
-        for marker in (
-            "revenue",
-            "profit",
-            "earnings",
-            "guidance",
-            "market share",
-            "매출",
-            "영업이익",
-            "순이익",
-            "실적",
-            "가이던스",
-            "시장점유율",
-            "점유율",
         )
     )
     if product_sales_story and not material_company_context:
@@ -449,6 +537,29 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
         value = value.replace("니산", "닛산")
     if "auckland" in source_text:
         value = value.replace("아크랜드", "오클랜드")
+    if "boe/d" in source_text:
+        value = re.sub(
+            r"(?<![A-Za-z])boe\s*/\s*d를",
+            "석유환산배럴/일을",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(
+            r"(?<![A-Za-z])boe\s*/\s*d(?![A-Za-z])",
+            "석유환산배럴/일",
+            value,
+            flags=re.IGNORECASE,
+        )
+    if "maybank" in source_text:
+        value = value.replace("마이칸은행은", "메이뱅크는")
+        value = value.replace("마이칸은행이", "메이뱅크가")
+        value = value.replace("마이칸은행", "메이뱅크")
+        value = value.replace("마이칸 은행", "메이뱅크")
+    if "maybank" in source_text and "etiqa" in source_text:
+        value = value.replace(
+            "은행 주도의 배분을",
+            "은행 채널을 통한 보험 판매를",
+        )
     return value
 
 
@@ -473,6 +584,147 @@ def _has_unexplained_specialist_acronym(title: str, content: str) -> bool:
         if not korean_first and not acronym_first:
             return True
     return False
+
+
+def _has_ambiguous_percentage_growth(content: str) -> bool:
+    metric_markers = (
+        "매출",
+        "수익",
+        "영업이익",
+        "순이익",
+        "주당순이익",
+        "생산량",
+        "판매량",
+        "출하량",
+        "시장점유율",
+        "점유율",
+        "이용자",
+        "가입자",
+        "수요",
+        "가격",
+        "물가",
+        "임금",
+        "고용",
+        "국내총생산",
+        "GDP",
+        "경제",
+        "거래량",
+        "자산",
+        "주문",
+        "발행",
+        "회사채",
+        "단기사채",
+        "CP",
+    )
+    for sentence in re.split(r"(?<=[.!?])\s+", content):
+        has_percentage_growth = re.search(
+            r"\d+(?:\.\d+)?%[^.!?]{0,12}(?:성장률|성장|증가)",
+            sentence,
+        )
+        if has_percentage_growth and not any(
+            marker in sentence for marker in metric_markers
+        ):
+            return True
+    return False
+
+
+def _normalize_importance_score(article: dict, importance_score):
+    if importance_score < 9:
+        return importance_score
+
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    ).casefold()
+    systemic_markers = (
+        "intervention",
+        "emergency",
+        "trading halt",
+        "market crash",
+        "financial crisis",
+        "bank run",
+        "sovereign default",
+        "war",
+        "invasion",
+        "unexpected rate",
+        "surprise rate",
+        "시장 개입",
+        "비상 조치",
+        "거래 중단",
+        "시장 붕괴",
+        "금융 위기",
+        "뱅크런",
+        "국가 부도",
+        "전쟁",
+        "침공",
+        "예상 밖 금리",
+        "깜짝 금리",
+    )
+    has_systemic_marker = any(marker in source_text for marker in systemic_markers)
+
+    routine_market_record = any(
+        marker in source_text
+        for marker in (
+            "record high",
+            "all-time high",
+            "historical high",
+            "사상 최고",
+            "역대 최고",
+            "최고치",
+            "신고가",
+        )
+    ) and any(
+        marker in source_text
+        for marker in (
+            "s&p",
+            "nasdaq",
+            "dow",
+            "stock market",
+            "stock index",
+            "코스피",
+            "코스닥",
+            "증시",
+            "주식시장",
+            "주가지수",
+        )
+    )
+    if routine_market_record and not has_systemic_marker:
+        return 8
+
+    earnings_story = any(
+        marker in source_text
+        for marker in (
+            "earnings",
+            "quarterly revenue",
+            "quarterly profit",
+            "quarter results",
+            "분기 매출",
+            "분기 영업이익",
+            "분기 순이익",
+            "분기 실적",
+        )
+    )
+    exceptional_earnings_markers = (
+        "accounting fraud",
+        "restatement",
+        "bankruptcy",
+        "default",
+        "record loss",
+        "withdraws guidance",
+        "suspends guidance",
+        "회계 부정",
+        "실적 정정",
+        "파산",
+        "채무불이행",
+        "사상 최대 손실",
+        "가이던스 철회",
+        "가이던스 중단",
+    )
+    if earnings_story and not any(
+        marker in source_text for marker in exceptional_earnings_markers
+    ):
+        return 8
+    return importance_score
 
 
 def _missing_source_geography(
@@ -806,20 +1058,36 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 공항 편의 서비스 도입, 지역 상점 단속, 소비재 연구·생활 정보처럼 금융시장이나 주요 산업에 미치는 영향이 작은 기사
 - 최고경영자·최고재무책임자 교체가 아닌 통상적인 중간관리자 선임 기사
 - 실적 수치가 아직 발표되지 않은 실적 발표 예정·미리보기 기사
+- 대학 캠퍼스 개설, 제재 없는 단순 경고, 계정 차단, 결과나 합의가 없는 회의처럼 경제적 파급력이 작은 단발성 소식
+- 계약·고객·매출·생산·정부 도입처럼 상업적 결과가 확인되지 않은 제품·플랫폼 출시
+- 소비자 쇼핑 설문, 가능성만 설명한 보고서, 기업 가이던스가 아닌 일반 수요 전망
 
 속보일 필요는 없습니다. 의미 있는 새 경제 소식이면 모두 선택하세요. 기사에 있는 사실만 사용하세요.
 선택하려면 누가 무엇을 새로 발표·결정·변경했거나 어떤 사건이 새로 발생했는지 명확히 말할 수 있어야 합니다.
 경제 초급 독자도 주체를 알 수 있도록 국가·기관·기업 이름을 제목이나 요약에 명시하세요. 원문에 국가가 있는데 생략하지 마세요.
 일반 영어 단어를 한국어 문장에 남기지 말고 자연스럽게 번역하세요. GPIF·FSSAI·OFS처럼 낯선 약어는 한국어 기관명이나 뜻을 먼저 쓰고 괄호 안에 약어를 적으세요.
+`boe/d` 같은 전문 단위는 `석유환산배럴/일`처럼 초급 독자가 뜻을 알 수 있게 풀어 쓰세요.
 직역하면 뜻이 어색한 금융·경영 용어는 한국에서 통용되는 표현으로 옮기고, 확신할 수 없으면 해당 기사를 제외하세요.
 요약은 핵심 사실과 주요 수치·시점을 먼저 쓰고 110자 이내의 1~2문장으로 작성하세요.
+퍼센트 수치를 쓸 때는 매출·순이익·생산량·가격처럼 무엇이 변했는지 반드시 같은 문장에 명시하세요. `40% 성장률`처럼 지표가 불분명한 표현은 금지합니다.
 요약의 모든 문장은 뉴스 독자에게 보고하듯 자연스러운 정중한 보고체로 쓰고 `했습니다.`, `됐습니다.`, `입니다.`처럼 끝내세요. 제목처럼 `상승`, `발표` 같은 명사형으로 끝내지 마세요.
 기사 정보가 부족하면 `TEXT_TOO_SHORT`, `N/A`, `내용이 부족합니다` 같은 대체 문구를 만들지 말고 해당 기사를 선택 결과에서 제외하세요.
 `시장 영향:`, `관전 포인트` 같은 상투적 해설을 덧붙이거나 물결표가 포함된 `~입니다`를 기계적으로 붙이지 마세요.
 기사에 직접 명시된 시장 반응만 덧붙이고, 원문에 없는 전망·인과관계·투자 판단이나 상투적인 시장 영향 문구를 만들지 마세요.
 원문의 숫자와 단위를 그대로 사용하고 임의로 환산하거나 새로운 숫자를 만들지 마세요.
-중요도 9~10은 긴급 속보로, 주요국 중앙은행·정부의 중대 정책, 전쟁·금융시스템 충격, 세계적 대기업의 중대 사건에만 사용하세요.
-중요도 7~8은 주요 경제 소식으로, 기업 실적·경제지표·정책·규제·산업 변화를 다루되 국가나 대형 시장에 직접 영향이 큰 경우에만 8을 사용하세요.
+기사 종류와 무관하게 `영향 범위`, `변화 규모`, `시장 즉시성` 세 기준으로 중요도를 판단하세요.
+- 7~8점은 주요 경제 소식, 9~10점은 화면과 알림에서 긴급 속보로 사용됩니다.
+- 9점은 국가·전체 시장·주요 산업·세계적 기업에 미치는 범위, 평소보다 현저하거나 예상 밖인 변화, 가격과 기대에 빠르게 반영될 즉시성 중 두 가지 이상을 강하게 충족하는 굵직한 속보에만 사용하세요.
+- 10점은 세 기준을 모두 충족하며 세계 시장이나 금융시스템에 충격을 줄 수 있는 극히 드문 사건에만 사용하세요.
+- 8점은 주요 기업 실적·산업 변화·정책·규제처럼 영향이 크지만 광범위한 즉시 재평가까지 요구하지 않는 주요 경제 소식입니다.
+- 7점은 의미 있는 새 경제 사실이지만 영향 범위가 제한적인 소식입니다.
+- 일반적인 분기 실적, 단순 지수 최고치, 제품 공개, 결과 없는 회의에는 9~10점을 주지 마세요. 반대로 기업·정책·지정학 등 어떤 종류든 위 세 기준을 충족하면 속보로 평가하세요.
+
+분류 기준:
+- `indicator`: 정부·중앙은행·공식기관이 발표한 물가·고용·성장률·생산·소비 등 수치형 경제지표
+- `market`: 주식·채권·외환·원자재·가상자산 시장과 통화·금융정책
+- `geopolitics`: 전쟁·외교·제재·국가 간 갈등
+- `corporate`: 기업 실적·인수합병·기술·공급망과 특정 산업에 직접 적용되는 규제
 
 [최근 24시간 저장 뉴스 - 중복 비교 전용]
 {json.dumps(recent_news, ensure_ascii=False)}
@@ -975,6 +1243,13 @@ def select_and_summarize(
                 source_ref,
             )
             continue
+        if _has_ambiguous_percentage_growth(content):
+            LOGGER.warning(
+                "Discarding AI decision with unnamed percentage metric: "
+                "source_ref=%s",
+                source_ref,
+            )
+            continue
         if _missing_source_geography(
             articles[temp_id],
             title,
@@ -1008,6 +1283,11 @@ def select_and_summarize(
                 values,
             )
             continue
+
+        importance_score = _normalize_importance_score(
+            articles[temp_id],
+            importance_score,
+        )
 
         item = articles[temp_id].copy()
         item["normalized_title"] = title

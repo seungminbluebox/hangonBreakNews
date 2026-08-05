@@ -591,6 +591,86 @@ class NewsSelectorTests(unittest.TestCase):
         for item in material_articles:
             self.assertIn(item["provider_article_id"], generator.prompts[0])
 
+    def test_excludes_nonmaterial_reports_surveys_launches_and_meetings_before_ai(self):
+        low_value_articles = [
+            article(
+                "campus-opening",
+                "FDU opens 70,000-square-foot campus at Oakridge Park",
+                "The university will open the new campus in September.",
+                "https://example.com/campus-opening",
+            ),
+            article(
+                "development-report",
+                "World Bank report says AI could accelerate developing-country growth",
+                "The report discussed how AI may support future economic growth.",
+                "https://example.com/development-report",
+            ),
+            article(
+                "scam-accounts",
+                "OpenAI blocks Cambodian accounts used for investment scams",
+                "The company disabled accounts after identifying abusive activity.",
+                "https://example.com/scam-accounts",
+            ),
+            article(
+                "product-platform",
+                "Electrovaya launches high-power energy storage platform",
+                "The new product is designed for data centers.",
+                "https://example.com/product-platform",
+            ),
+            article(
+                "shopping-survey",
+                "Survey finds two-thirds of consumers plan to use AI for gift shopping",
+                "The consumer survey covered product comparison and recommendations.",
+                "https://example.com/shopping-survey",
+            ),
+            article(
+                "biofuel-forecast",
+                "Global biofuel demand forecast to grow 30% in 2026",
+                "Demand is expected to grow because of energy security concerns.",
+                "https://example.com/biofuel-forecast",
+            ),
+            article(
+                "youtube-warning",
+                "Indonesia warns YouTube over vaping promotion involving children",
+                "The ministry requested an answer within three days but announced no sanction.",
+                "https://example.com/youtube-warning",
+            ),
+            article(
+                "discussion-only-meeting",
+                "White House holds meeting with major AI companies",
+                "Officials discussed regulation and competition but announced no decision.",
+                "https://example.com/discussion-only-meeting",
+            ),
+            article(
+                "company-spin",
+                "Ford calls 10.2% sales decline a good month",
+                "The company described the decline as consistent with its strategy.",
+                "https://example.com/company-spin",
+            ),
+        ]
+        material_articles = [
+            article(
+                "medical-device-rule",
+                "Canada finalizes new medical device licensing requirements",
+                "The binding regulatory changes take effect in December.",
+                "https://example.com/medical-device-rule",
+            ),
+            article(
+                "earnings-guidance",
+                "Novo Nordisk reports second-quarter sales and raises annual guidance",
+                "The company released results and raised its full-year outlook.",
+                "https://example.com/earnings-guidance",
+            ),
+        ]
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([*low_value_articles, *material_articles], generator)
+
+        for item in low_value_articles:
+            self.assertNotIn(item["provider_article_id"], generator.prompts[0])
+        for item in material_articles:
+            self.assertIn(item["provider_article_id"], generator.prompts[0])
+
     def test_excludes_recently_saved_same_event_but_keeps_distinct_company_news(self):
         boeing = article(
             "boeing-certification",
@@ -831,6 +911,41 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["provider_article_id"], "duplicate-2")
         self.assertEqual(selected[0]["source_name"], "Yonhap News")
+
+    def test_deduplicates_spaced_and_compact_titles_for_the_same_market_record(self):
+        source = article(
+            "us-record-high-followup",
+            "US stocks hit record high as AI earnings rise and oil falls",
+            "The S&P 500 rose 1.8% to an all-time high.",
+            "https://example.com/us-record-high-followup",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "us-record-high-followup",
+                "source_title": "US stocks hit record high as AI earnings rise and oil falls",
+                "title": "미국 주식시장, AI 이익·유가 하락으로 사상 최고치",
+                "content": "S&P 500이 1.8% 상승하며 사상 최고치를 기록했습니다.",
+                "importance_score": 9,
+                "category": "market",
+                "news_type": "new_development",
+                "selection_reason": "미국 증시가 사상 최고치를 기록했습니다."
+            }
+        ]"""
+        recent_news = [
+            {
+                "title": "미국주식시장 역사적 고점",
+                "content": "S&P 500이 1.8% 상승하며 역사적 최고치를 기록했습니다.",
+            }
+        ]
+
+        selected = select_and_summarize(
+            [source],
+            FakeGenerator(response),
+            recent_news=recent_news,
+        )
+
+        self.assertEqual(selected, [])
 
     def test_deduplicates_different_headlines_from_the_same_statistical_release(self):
         short_report = article(
@@ -1132,6 +1247,153 @@ class NewsSelectorTests(unittest.TestCase):
 
         self.assertEqual(selected, [])
 
+    def test_caps_routine_record_and_earnings_but_keeps_market_intervention_breaking(self):
+        market_record = article(
+            "market-record",
+            "S&P 500 rises 1.8% to a record high",
+            "The index reached an all-time high after a broad rally.",
+            "https://example.com/market-record",
+        )
+        routine_earnings = article(
+            "routine-earnings",
+            "SpaceX reports second-quarter revenue above forecasts",
+            "The company reported quarterly revenue of KRW 11 trillion.",
+            "https://example.com/routine-earnings",
+        )
+        intervention = article(
+            "joint-intervention",
+            "United States and Japan conduct joint yen intervention",
+            "The two governments intervened directly in the foreign exchange market.",
+            "https://example.com/joint-intervention",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "market-record",
+                "source_title": "S&P 500 rises 1.8% to a record high",
+                "title": "S&P 500, 1.8% 상승해 사상 최고치",
+                "content": "S&P 500이 1.8% 상승하며 사상 최고치를 기록했습니다.",
+                "importance_score": 9,
+                "category": "market",
+                "news_type": "new_development",
+                "selection_reason": "미국 대표 지수가 사상 최고치를 기록했습니다."
+            },
+            {
+                "temp_id": 1,
+                "source_ref": "routine-earnings",
+                "source_title": "SpaceX reports second-quarter revenue above forecasts",
+                "title": "스페이스X, 2분기 매출 11조 원 기록",
+                "content": "스페이스X가 2분기 매출 11조 원을 기록했다고 발표했습니다.",
+                "importance_score": 9,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "분기 실적이 시장 전망을 웃돌았습니다."
+            },
+            {
+                "temp_id": 2,
+                "source_ref": "joint-intervention",
+                "source_title": "United States and Japan conduct joint yen intervention",
+                "title": "미·일 정부, 엔화 방어 공동 시장 개입",
+                "content": "미국과 일본 정부가 엔화 방어를 위해 외환시장에 공동 개입했습니다.",
+                "importance_score": 9,
+                "category": "market",
+                "news_type": "breaking",
+                "selection_reason": "주요국 정부가 외환시장에 직접 개입했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize(
+            [market_record, routine_earnings, intervention],
+            FakeGenerator(response),
+        )
+
+        self.assertEqual(
+            {
+                item["provider_article_id"]: item["importance_score"]
+                for item in selected
+            },
+            {
+                "market-record": 8,
+                "routine-earnings": 8,
+                "joint-intervention": 9,
+            },
+        )
+
+    def test_caps_korean_routine_market_record_and_earnings(self):
+        market_record = article(
+            "korean-market-record",
+            "코스피 2.1% 상승해 사상 최고치",
+            "코스피 지수가 2.1% 상승하며 사상 최고치를 기록했습니다.",
+            "https://example.com/korean-market-record",
+        )
+        routine_earnings = article(
+            "korean-routine-earnings",
+            "삼성전자 2분기 매출 80조 원 기록",
+            "삼성전자가 2분기 매출 80조 원을 발표했습니다.",
+            "https://example.com/korean-routine-earnings",
+        )
+        market_record["raw_content"] = "코스피가 장중 사상 최고치를 경신했습니다."
+        routine_earnings["raw_content"] = "삼성전자가 정기 분기 실적을 발표했습니다."
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "korean-market-record",
+                "source_title": "코스피 2.1% 상승해 사상 최고치",
+                "title": "코스피, 2.1% 상승해 사상 최고치",
+                "content": "코스피가 2.1% 상승하며 사상 최고치를 기록했습니다.",
+                "importance_score": 9,
+                "category": "market",
+                "news_type": "new_development",
+                "selection_reason": "국내 대표 지수가 사상 최고치를 기록했습니다."
+            },
+            {
+                "temp_id": 1,
+                "source_ref": "korean-routine-earnings",
+                "source_title": "삼성전자 2분기 매출 80조 원 기록",
+                "title": "삼성전자, 2분기 매출 80조 원 기록",
+                "content": "삼성전자가 2분기 매출 80조 원을 기록했습니다.",
+                "importance_score": 9,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "삼성전자가 분기 실적을 발표했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize(
+            [market_record, routine_earnings],
+            FakeGenerator(response),
+        )
+
+        self.assertEqual(
+            [item["importance_score"] for item in selected],
+            [8, 8],
+        )
+
+    def test_rejects_percentage_growth_without_a_named_metric(self):
+        source = article(
+            "ambiguous-growth",
+            "Arista Networks launches AI platform as quarterly revenue grows 40%",
+            "The company said quarterly revenue increased 40%.",
+            "https://example.com/ambiguous-growth",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "ambiguous-growth",
+                "source_title": "Arista Networks launches AI platform as quarterly revenue grows 40%",
+                "title": "아리스타 네트워크, AI 플랫폼 출시로 실적 호조",
+                "content": "아리스타 네트워크가 실적에서 40% 성장률을 기록했습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "회사가 신규 플랫폼과 분기 실적을 발표했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
     def test_normalizes_known_company_transliteration(self):
         source = article(
             "nissan-results",
@@ -1188,6 +1450,67 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(
             selected[0]["normalized_content"],
             "오클랜드 항만이 물류 처리 능력을 높이기 위한 대규모 확장 투자를 승인했습니다.",
+        )
+
+    def test_normalizes_boe_per_day_for_beginner_readers(self):
+        source = article(
+            "oil-production",
+            "Diamondback second-quarter production exceeds 1 million boe/d",
+            "The producer raised full-year production guidance.",
+            "https://example.com/oil-production",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "oil-production",
+                "source_title": "Diamondback second-quarter production exceeds 1 million boe/d",
+                "title": "다이아몬드백, 생산량 1백만 boe/d 돌파",
+                "content": "다이아몬드백의 2분기 생산량이 1백만 boe/d를 넘었으며 연간 가이던스를 높였습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "생산량과 연간 가이던스가 새로 발표됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            selected[0]["normalized_title"],
+            "다이아몬드백, 생산량 1백만 석유환산배럴/일 돌파",
+        )
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "다이아몬드백의 2분기 생산량이 1백만 석유환산배럴/일을 넘었으며 연간 가이던스를 높였습니다.",
+        )
+
+    def test_normalizes_maybank_name_and_insurance_distribution_phrase(self):
+        source = article(
+            "maybank-etiqa",
+            "Maybank acquires full ownership of Etiqa insurance business",
+            "The deal strengthens bank-led insurance distribution in Malaysia and Singapore.",
+            "https://example.com/maybank-etiqa",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "maybank-etiqa",
+                "source_title": "Maybank acquires full ownership of Etiqa insurance business",
+                "title": "마이칸은행, 에티카 완전 인수",
+                "content": "마이칸은행은 에티카를 인수해 말레이시아·싱가포르에서 은행 주도의 배분을 강화했습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "은행이 보험 사업의 완전한 소유권을 확보했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["normalized_title"], "메이뱅크, 에티카 완전 인수")
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "메이뱅크는 에티카를 인수해 말레이시아·싱가포르에서 은행 채널을 통한 보험 판매를 강화했습니다.",
         )
 
     def test_rejects_summary_without_polite_report_ending(self):
