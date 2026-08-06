@@ -768,6 +768,123 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertIn("canada-device-rule", generator.prompts[0])
         self.assertIn("quarter-end-date", generator.prompts[0])
 
+    def test_excludes_investor_letter_commentary_before_ai(self):
+        investor_letter = article(
+            "ice-investor-letter",
+            "Emerald Wealth Partners discusses ICE in second-quarter investor letter",
+            "The fund reported a 0.8% net return and described ICE as resilient.",
+            "https://example.com/ice-investor-letter",
+        )
+        earnings = article(
+            "ice-earnings",
+            "ICE reports second-quarter earnings",
+            "ICE reported quarterly revenue and net income.",
+            "https://example.com/ice-earnings",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([investor_letter, earnings], generator)
+
+        self.assertNotIn("ice-investor-letter", generator.prompts[0])
+        self.assertIn("ice-earnings", generator.prompts[0])
+
+    def test_excludes_tentative_corporate_plans_without_a_decision_before_ai(self):
+        cfe_plan = article(
+            "cfe-vehicle-plan",
+            "Mexico's CFE considers gas-generation-backed investment vehicle",
+            "The state utility said it could launch the vehicle around 2027.",
+            "https://example.com/cfe-vehicle-plan",
+        )
+        disney_plan = article(
+            "disney-streaming-plan",
+            "Disney considers free streaming service",
+            "The company is exploring an ad-supported service but has made no decision.",
+            "https://example.com/disney-streaming-plan",
+        )
+        approved_sale = article(
+            "approved-sale",
+            "Regulator approves sale of national power assets",
+            "The regulator approved the binding asset sale today.",
+            "https://example.com/approved-sale",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([cfe_plan, disney_plan, approved_sale], generator)
+
+        self.assertNotIn("cfe-vehicle-plan", generator.prompts[0])
+        self.assertNotIn("disney-streaming-plan", generator.prompts[0])
+        self.assertIn("approved-sale", generator.prompts[0])
+
+    def test_excludes_nonbinding_guidelines_and_minor_codeshare_expansion_before_ai(self):
+        trade_group_guidelines = article(
+            "nai-guidelines",
+            "NAI releases advertising AI guidelines",
+            "The trade association issued voluntary guidance urging industry compliance.",
+            "https://example.com/nai-guidelines",
+        )
+        codeshare = article(
+            "airline-codeshare",
+            "Emirates and South African Airways expand codeshare to nine routes",
+            "The airlines added nine routes to their existing codeshare partnership.",
+            "https://example.com/airline-codeshare",
+        )
+        regulator_rule = article(
+            "regulator-rule",
+            "Regulator adopts binding rules for AI advertising",
+            "The regulator adopted enforceable disclosure requirements today.",
+            "https://example.com/regulator-rule",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize(
+            [trade_group_guidelines, codeshare, regulator_rule],
+            generator,
+        )
+
+        self.assertNotIn("nai-guidelines", generator.prompts[0])
+        self.assertNotIn("airline-codeshare", generator.prompts[0])
+        self.assertIn("regulator-rule", generator.prompts[0])
+
+    def test_excludes_court_skepticism_without_a_ruling_before_ai(self):
+        court_comment = article(
+            "court-doubts-plan",
+            "Court questions TG Jones restructuring plan",
+            "The judge expressed serious doubts but issued no ruling or order.",
+            "https://example.com/court-doubts-plan",
+        )
+        court_order = article(
+            "court-protection-order",
+            "Court grants Goodfood creditor protection order",
+            "The court granted a creditor protection order for debt restructuring.",
+            "https://example.com/court-protection-order",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([court_comment, court_order], generator)
+
+        self.assertNotIn("court-doubts-plan", generator.prompts[0])
+        self.assertIn("court-protection-order", generator.prompts[0])
+
+    def test_excludes_retrospective_stock_performance_without_a_new_catalyst_before_ai(self):
+        retrospective = article(
+            "goldman-stock-history",
+            "Goldman Sachs stock has surged 106% since 2025",
+            "The article reviews the stock's past performance without a new company event.",
+            "https://example.com/goldman-stock-history",
+        )
+        market_event = article(
+            "goldman-earnings",
+            "Goldman Sachs reports second-quarter earnings",
+            "The bank reported new quarterly revenue and net income figures.",
+            "https://example.com/goldman-earnings",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([retrospective, market_event], generator)
+
+        self.assertNotIn("goldman-stock-history", generator.prompts[0])
+        self.assertIn("goldman-earnings", generator.prompts[0])
+
     def test_excludes_recently_saved_same_event_but_keeps_distinct_company_news(self):
         boeing = article(
             "boeing-certification",
@@ -866,6 +983,76 @@ class NewsSelectorTests(unittest.TestCase):
             [item["provider_article_id"] for item in selected],
             ["boeing-complete"],
         )
+
+    def test_rejects_same_intervention_story_when_only_the_market_quote_changed(self):
+        source = article(
+            "yen-stable-followup",
+            "Yen holds steady after historic joint intervention",
+            "The yen held near 157.72 per dollar after Japan and the US bought yen.",
+            "https://example.com/yen-stable-followup",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "yen-stable-followup",
+                "source_title": "Yen holds steady after historic joint intervention",
+                "title": "일본 엔화, 공동 개입 후 안정세 유지",
+                "content": "미국과 일본의 공동 매수 개입 이후 엔화가 달러당 157.72엔 선에서 안정세를 유지했습니다.",
+                "importance_score": 8,
+                "category": "market",
+                "news_type": "follow_up",
+                "selection_reason": "공동 개입 이후 엔화 시세가 안정세를 유지했습니다."
+            }
+        ]"""
+        recent_news = [
+            {
+                "title": "일본 엔화, 미·일 공동 개입 후 변동성 완화되며 안정세",
+                "content": "미국과 일본의 공동 매수 개입 이후 엔화가 달러당 157.55엔 선에서 안정세를 보였습니다.",
+            }
+        ]
+
+        selected = select_and_summarize(
+            [source],
+            FakeGenerator(response),
+            recent_news=recent_news,
+        )
+
+        self.assertEqual(selected, [])
+
+    def test_deduplicates_same_ai_safety_test_with_different_headline_wording(self):
+        source = article(
+            "aisi-test-followup",
+            "UK security institute finds flaws in OpenAI and Anthropic agents",
+            "AISI tests found that OpenAI and Anthropic agents performed unauthorized actions.",
+            "https://example.com/aisi-test-followup",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "aisi-test-followup",
+                "source_title": "UK security institute finds flaws in OpenAI and Anthropic agents",
+                "title": "영국 보안연구소, OpenAI·안스로픽 AI 보안 결함 발견",
+                "content": "영국 인공지능 보안연구소의 시험에서 오픈AI와 안스로픽 에이전트의 승인되지 않은 동작이 발견됐습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "new_development",
+                "selection_reason": "영국 연구소가 AI 에이전트 시험 결과를 공개했습니다."
+            }
+        ]"""
+        recent_news = [
+            {
+                "title": "영국 AI 보안 테스트 중 모델 오작동 발생",
+                "content": "영국 인공지능 보안연구소의 시험에서 오픈AI와 안스로픽 모델의 문제 행동이 관찰됐습니다.",
+            }
+        ]
+
+        selected = select_and_summarize(
+            [source],
+            FakeGenerator(response),
+            recent_news=recent_news,
+        )
+
+        self.assertEqual(selected, [])
 
     def test_recent_news_prompt_is_duplicate_context_not_a_summary_source(self):
         source = article(
@@ -1490,6 +1677,148 @@ class NewsSelectorTests(unittest.TestCase):
         selected = select_and_summarize([source], FakeGenerator(response))
 
         self.assertEqual(selected, [])
+
+    def test_rejects_fund_return_attributed_to_a_portfolio_company(self):
+        source = article(
+            "fund-return-attribution",
+            "Norway wealth fund returns 0.8% in second quarter and discusses ICE holding",
+            "The sovereign wealth fund reported a 0.8% second-quarter net return; ICE was one holding discussed.",
+            "https://example.com/fund-return-attribution",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "fund-return-attribution",
+                "source_title": "Norway wealth fund returns 0.8% in second quarter and discusses ICE holding",
+                "title": "ICE, 시장 변동성에도 견고한 구조",
+                "content": "ICE가 2분기에 0.8% 순수익을 기록했습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "new_development",
+                "selection_reason": "분기 투자 성과가 공개됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_keeps_fund_return_when_the_source_actor_is_preserved(self):
+        source = article(
+            "fund-return-correct",
+            "Norway wealth fund returns 0.8% in the second quarter",
+            "The sovereign wealth fund reported a 0.8% net return for the quarter.",
+            "https://example.com/fund-return-correct",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "fund-return-correct",
+                "source_title": "Norway wealth fund returns 0.8% in the second quarter",
+                "title": "노르웨이 국부펀드, 2분기 0.8% 수익",
+                "content": "노르웨이 국부펀드가 2분기에 0.8% 순수익률을 기록했습니다.",
+                "importance_score": 7,
+                "category": "market",
+                "news_type": "official_announcement",
+                "selection_reason": "국부펀드가 새 분기 수익률을 발표했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["fund-return-correct"],
+        )
+
+    def test_normalizes_goldman_sachs_name(self):
+        source = article(
+            "goldman-results",
+            "Goldman Sachs reports second-quarter earnings",
+            "Goldman Sachs reported new quarterly revenue and net income.",
+            "https://example.com/goldman-results",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "goldman-results",
+                "source_title": "Goldman Sachs reports second-quarter earnings",
+                "title": "골드만 사스, 2분기 실적 발표",
+                "content": "골드만 사스가 2분기 매출과 순이익을 발표했습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "새 분기 실적이 발표됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["normalized_title"], "골드만삭스, 2분기 실적 발표")
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "골드만삭스가 2분기 매출과 순이익을 발표했습니다.",
+        )
+
+    def test_normalizes_network_advertising_initiative_name(self):
+        source = article(
+            "nai-agreement",
+            "Network Advertising Initiative signs binding data agreement",
+            "The NAI signed a binding data agreement with a federal regulator.",
+            "https://example.com/nai-agreement",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "nai-agreement",
+                "source_title": "Network Advertising Initiative signs binding data agreement",
+                "title": "네트워크 광고 주도권, 데이터 계약 체결",
+                "content": "네트워크 광고 주도권이 연방 규제기관과 구속력 있는 데이터 계약을 체결했습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "구속력 있는 신규 계약이 체결됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            selected[0]["normalized_title"],
+            "네트워크 광고 이니셔티브(NAI), 데이터 계약 체결",
+        )
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "네트워크 광고 이니셔티브(NAI)가 연방 규제기관과 구속력 있는 데이터 계약을 체결했습니다.",
+        )
+
+    def test_converts_decimal_billion_dollars_to_korean_eok_correctly(self):
+        source = article(
+            "manulife-results",
+            "Manulife reports second-quarter earnings",
+            "Core EPS rose 16% and net income increased by $0.3 billion.",
+            "https://example.com/manulife-results",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "manulife-results",
+                "source_title": "Manulife reports second-quarter earnings",
+                "title": "맨라이프, 2026년 2분기 실적 발표",
+                "content": "맨라이프의 핵심 주당순이익이 16% 증가하고 순이익이 0.3억 달러 늘어났습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "회사가 새 분기 실적을 발표했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "맨라이프의 핵심 주당순이익이 16% 증가하고 순이익이 3억 달러 늘어났습니다.",
+        )
 
     def test_normalizes_known_company_transliteration(self):
         source = article(

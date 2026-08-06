@@ -1,6 +1,7 @@
 """AI-assisted selection and Korean summarization for normalized news articles."""
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 import json
 import logging
@@ -129,6 +130,19 @@ MATERIAL_FOLLOW_UP_MARKERS = (
     "하향",
     "확대",
     "추가",
+)
+ROUTINE_MARKET_QUOTE_MARKERS = (
+    "안정세",
+    "보합",
+    "달러당",
+    "선에서",
+    "held near",
+    "holds near",
+    "held steady",
+    "holds steady",
+    "stabilized",
+    "remained stable",
+    "traded at",
 )
 EVENT_TOKEN_SYNONYMS = (
     ("연방항공청", "faa"),
@@ -618,6 +632,103 @@ def _is_low_value_item(article: dict) -> bool:
         )
     ):
         return True
+    if "investor letter" in text and any(
+        marker in text
+        for marker in (
+            "fund reported",
+            "fund returned",
+            "portfolio returned",
+            "net return",
+            "discusses",
+            "highlighted",
+        )
+    ):
+        return True
+    if (
+        any(
+            marker in text
+            for marker in (
+                "considers",
+                "considering",
+                "explores",
+                "exploring",
+                "could launch",
+                "may launch",
+                "no decision",
+            )
+        )
+        and any(
+            marker in text
+            for marker in (
+                "streaming service",
+                "investment vehicle",
+                "financing vehicle",
+            )
+        )
+        and not any(
+            marker in text
+            for marker in (
+                "approved",
+                "signed",
+                "binding agreement",
+                "completed",
+                "launched",
+            )
+        )
+    ):
+        return True
+    if (
+        any(marker in text for marker in ("trade association", "industry group"))
+        and any(marker in text for marker in ("guideline", "guidance"))
+        and any(marker in text for marker in ("voluntary", "urging", "urges"))
+        and not any(
+            marker in text
+            for marker in ("regulator adopted", "binding", "enforceable", "new rule")
+        )
+    ):
+        return True
+    if "codeshare" in text and any(
+        marker in text
+        for marker in ("route", "routes", "destination", "destinations")
+    ):
+        return True
+    if (
+        any(marker in text for marker in ("court", "judge"))
+        and any(
+            marker in text
+            for marker in ("questions", "questioned", "doubts", "skepticism")
+        )
+        and (
+            any(marker in text for marker in ("no ruling", "no order"))
+            or not any(
+                marker in text
+                for marker in (
+                    "ruling",
+                    "order",
+                    "approved",
+                    "rejected",
+                    "granted",
+                    "dismissed",
+                )
+            )
+        )
+    ):
+        return True
+    if (
+        "stock" in title
+        and re.search(r"\d+(?:\.\d+)?%", title)
+        and re.search(r"\bsince\s+(?:19|20)\d{2}\b", title)
+        and any(
+            marker in text
+            for marker in (
+                "past performance",
+                "without a new",
+                "historical performance",
+                "looks back",
+            )
+        )
+    ):
+        return True
     product_unit_context = any(
         marker in text
         for marker in (
@@ -685,6 +796,23 @@ def _is_low_value_item(article: dict) -> bool:
     )
 
 
+def _billion_to_eok_equivalents(source_text: str) -> list[tuple[str, str]]:
+    equivalents = []
+    for match in re.finditer(
+        r"(?<![\d.])(\d+(?:\.\d+)?)\s+billion\b",
+        source_text,
+        flags=re.IGNORECASE,
+    ):
+        source_amount = match.group(1)
+        try:
+            eok_amount = Decimal(source_amount) * Decimal("10")
+        except InvalidOperation:
+            continue
+        formatted = format(eok_amount.normalize(), "f")
+        equivalents.append((source_amount, formatted))
+    return equivalents
+
+
 def _normalize_known_korean_terms(article: dict, value: str) -> str:
     source_text = " ".join(
         article.get(field) or ""
@@ -692,6 +820,21 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
     ).casefold()
     if "nissan" in source_text:
         value = value.replace("니산", "닛산")
+    if "goldman sachs" in source_text:
+        value = value.replace("골드만 사스", "골드만삭스")
+        value = value.replace("골드만 사츠", "골드만삭스")
+    if "network advertising initiative" in source_text:
+        value = value.replace(
+            "네트워크 광고 주도권",
+            "네트워크 광고 이니셔티브(NAI)",
+        )
+        value = value.replace("이니셔티브(NAI)이", "이니셔티브(NAI)가")
+    for source_amount, eok_amount in _billion_to_eok_equivalents(source_text):
+        value = re.sub(
+            rf"(?<![\d.]){re.escape(source_amount)}\s*억\s*달러",
+            f"{eok_amount}억 달러",
+            value,
+        )
     if "auckland" in source_text:
         value = value.replace("아크랜드", "오클랜드")
     if "boe/d" in source_text:
@@ -810,6 +953,36 @@ def _has_ambiguous_percentage_growth(content: str) -> bool:
         ):
             return True
     return False
+
+
+def _has_misattributed_fund_return(
+    article: dict,
+    title: str,
+    content: str,
+) -> bool:
+    source_text = " ".join(
+        article.get(field) or "" for field in ("raw_title", "raw_description")
+    ).casefold()
+    if not any(
+        marker in source_text
+        for marker in ("fund", "portfolio", "국부펀드", "기금", "포트폴리오")
+    ):
+        return False
+    if not any(
+        marker in source_text
+        for marker in ("return", "수익률", "운용수익")
+    ):
+        return False
+
+    summary_text = f"{title} {content}"
+    if not re.search(r"\d+(?:\.\d+)?%", summary_text):
+        return False
+    if not any(marker in summary_text for marker in ("수익", "수익률")):
+        return False
+    return not any(
+        marker in summary_text
+        for marker in ("펀드", "기금", "포트폴리오")
+    )
 
 
 def _normalize_importance_score(article: dict, importance_score):
@@ -985,6 +1158,10 @@ def _unsupported_summary_numbers(article: dict, title: str, content: str) -> set
     source_text = f"{source_text} {published_date}"
     source_text = re.sub(r"\[\s*\d+\s+chars?\s*\]", "", source_text, flags=re.IGNORECASE)
     source_numbers = _numeric_tokens(source_text, include_english_words=True)
+    source_numbers.update(
+        _normalize_number(eok_amount)
+        for _, eok_amount in _billion_to_eok_equivalents(source_text)
+    )
     summary_numbers = _numeric_tokens(f"{title} {content}")
     return summary_numbers - source_numbers
 
@@ -1061,6 +1238,21 @@ def _has_shared_event_signature(
     if len(shared_tokens) >= 3 and token_overlap >= 0.5:
         return True
 
+    first_all_tokens = _distinctive_event_tokens(f"{first_title} {first_content}")
+    second_all_tokens = _distinctive_event_tokens(f"{second_title} {second_content}")
+    shared_all_tokens = first_all_tokens & second_all_tokens
+    all_token_overlap = (
+        len(shared_all_tokens) / min(len(first_all_tokens), len(second_all_tokens))
+        if first_all_tokens and second_all_tokens
+        else 0
+    )
+    if (
+        len(shared_tokens) >= 2
+        and len(shared_all_tokens) >= 5
+        and all_token_overlap >= 0.4
+    ):
+        return True
+
     shared_numbers = _event_numeric_tokens(
         f"{first_title} {first_content}"
     ) & _event_numeric_tokens(f"{second_title} {second_content}")
@@ -1118,6 +1310,11 @@ def _has_material_follow_up(article: dict, recent_item: dict) -> bool:
         for marker in MATERIAL_FOLLOW_UP_MARKERS
     ):
         return True
+    if any(
+        marker in current_text.casefold()
+        for marker in ROUTINE_MARKET_QUOTE_MARKERS
+    ):
+        return False
     return bool(_numeric_tokens(current_text) - _numeric_tokens(recent_text))
 
 
@@ -1247,6 +1444,8 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 소비자 쇼핑 설문, 가능성만 설명한 보고서, 기업 가이던스가 아닌 일반 수요 전망
 - 개별 소매점의 결제수단 도입, 뚜렷한 새 원인이 없는 2% 안팎의 일반 지수 등락, 비핵심 기관의 경영진 보수 기사
 - 아직 실행되지 않은 시험 일정·장기 목표와 기사 작성일보다 3일 넘게 오래된 사건을 새 후속 사실 없이 다시 소개한 기사
+- 자산운용사의 투자자 서한·보유종목 평가, 결정되지 않은 서비스·투자수단 검토, 업계 단체의 비구속적 지침
+- 판결·명령 없이 법원이 의문만 표시한 기사, 통상적인 항공 노선·코드셰어 확대, 새 촉매 없는 과거 주가 수익률 재소개
 
 속보일 필요는 없습니다. 의미 있는 새 경제 소식이면 모두 선택하세요. 기사에 있는 사실만 사용하세요.
 선택하려면 누가 무엇을 새로 발표·결정·변경했거나 어떤 사건이 새로 발생했는지 명확히 말할 수 있어야 합니다.
@@ -1263,6 +1462,7 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 기사에 직접 명시된 시장 반응만 덧붙이고, 원문에 없는 전망·인과관계·투자 판단이나 상투적인 시장 영향 문구를 만들지 마세요.
 통제된 시험에서 관찰된 행동을 실제 시스템 탈출이나 현실 사고처럼 과장하지 말고, `중요한 지표입니다` 같은 편집자 평가를 덧붙이지 마세요.
 원문의 숫자와 단위를 그대로 사용하고 임의로 환산하거나 새로운 숫자를 만들지 마세요.
+펀드·지수·자회사의 수익률이나 실적을 기사에 함께 언급된 다른 기업의 수치로 바꾸지 마세요. 숫자를 쓸 때는 원문에서 그 숫자를 발표한 주체를 같은 문장에 명시하세요.
 기사 종류와 무관하게 `영향 범위`, `변화 규모`, `시장 즉시성` 세 기준으로 중요도를 판단하세요.
 - 7~8점은 주요 경제 소식, 9~10점은 화면과 알림에서 긴급 속보로 사용됩니다.
 - 9점은 국가·전체 시장·주요 산업·세계적 기업에 미치는 범위, 평소보다 현저하거나 예상 밖인 변화, 가격과 기대에 빠르게 반영될 즉시성 중 두 가지 이상을 강하게 충족하는 굵직한 속보에만 사용하세요.
@@ -1435,6 +1635,17 @@ def select_and_summarize(
         if _has_ambiguous_percentage_growth(content):
             LOGGER.warning(
                 "Discarding AI decision with unnamed percentage metric: "
+                "source_ref=%s",
+                source_ref,
+            )
+            continue
+        if _has_misattributed_fund_return(
+            articles[temp_id],
+            title,
+            content,
+        ):
+            LOGGER.warning(
+                "Discarding AI decision with misattributed fund return: "
                 "source_ref=%s",
                 source_ref,
             )
