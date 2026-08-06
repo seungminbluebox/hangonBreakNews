@@ -727,6 +727,180 @@ class NewsSelectorTests(unittest.TestCase):
         for item in material_articles:
             self.assertIn(item["provider_article_id"], generator.prompts[0])
 
+    def test_excludes_consumer_product_launches_without_commercial_results_before_ai(self):
+        product_articles = [
+            article(
+                "limited-whisky",
+                "Aston Martin and Glenfiddich launch limited 16-year whisky",
+                "The brands unveiled a limited-edition bottle.",
+                "https://example.com/limited-whisky",
+            ),
+            article(
+                "beer-bottles",
+                "Goose Island launches six new bottles",
+                "The brewer unveiled six bourbon-barrel product variants.",
+                "https://example.com/beer-bottles",
+            ),
+            article(
+                "future-car",
+                "Mercedes-AMG unveils 2027 GT 53 four-door model",
+                "The future model has 536 horsepower and a 500-mile range.",
+                "https://example.com/future-car",
+            ),
+            article(
+                "ford-name-price",
+                "Ford unveils Fathom electric pickup name and $28,350 price",
+                "Ford announced the model name and starting price but no sales or production result.",
+                "https://example.com/ford-name-price",
+            ),
+        ]
+        factory_halt = article(
+            "honda-halt",
+            "Honda halts three plants after earthquake damages supplier",
+            "Honda stopped production at three factories after supply disruption.",
+            "https://example.com/honda-halt",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([*product_articles, factory_halt], generator)
+
+        for item in product_articles:
+            self.assertNotIn(item["provider_article_id"], generator.prompts[0])
+        self.assertIn("honda-halt", generator.prompts[0])
+
+    def test_excludes_future_consumer_fee_change_before_ai(self):
+        baggage_fee = article(
+            "future-baggage-fee",
+            "Jetstar to charge baggage fee from February 2027",
+            "The airline will charge passengers up to $37 for baggage next year.",
+            "https://example.com/future-baggage-fee",
+        )
+        airline_results = article(
+            "airline-results",
+            "Jetstar reports quarterly profit increase",
+            "The airline reported new quarterly revenue and profit.",
+            "https://example.com/airline-results",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([baggage_fee, airline_results], generator)
+
+        self.assertNotIn("future-baggage-fee", generator.prompts[0])
+        self.assertIn("airline-results", generator.prompts[0])
+
+    def test_excludes_routine_currency_stability_without_a_new_action_before_ai(self):
+        stable_rand = article(
+            "rand-steady",
+            "South African rand holds steady on Iran talks hopes",
+            "The rand remained stable as investors watched diplomatic talks.",
+            "https://example.com/rand-steady",
+        )
+        intervention = article(
+            "rand-intervention",
+            "South African central bank intervenes in currency market",
+            "The central bank announced direct market intervention today.",
+            "https://example.com/rand-intervention",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([stable_rand, intervention], generator)
+
+        self.assertNotIn("rand-steady", generator.prompts[0])
+        self.assertIn("rand-intervention", generator.prompts[0])
+
+    def test_keeps_material_currency_instability_before_ai(self):
+        unstable_currency = article(
+            "currency-unstable",
+            "Currency becomes unstable during a banking panic",
+            "The currency became unstable as deposit withdrawals accelerated.",
+            "https://example.com/currency-unstable",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([unstable_currency], generator)
+
+        self.assertIn("currency-unstable", generator.prompts[0])
+
+    def test_excludes_vague_expert_risk_warning_without_new_evidence_before_ai(self):
+        warning = article(
+            "ai-risk-warning",
+            "Hinton warns AI agents could cause more cyberattacks",
+            "In an interview, Hinton said future AI misuse may increase risk.",
+            "https://example.com/ai-risk-warning",
+        )
+        test_result = article(
+            "ai-test-result",
+            "UK institute publishes new AI agent security test results",
+            "The official laboratory reported newly observed test behavior.",
+            "https://example.com/ai-test-result",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([warning, test_result], generator)
+
+        self.assertNotIn("ai-risk-warning", generator.prompts[0])
+        self.assertIn("ai-test-result", generator.prompts[0])
+
+    def test_excludes_minor_local_mobility_fine_before_ai(self):
+        scooter_fine = article(
+            "rome-scooter-fine",
+            "Rome fines Lime Bird and Dott over e-scooter services",
+            "The city imposed a EUR 2.675 million fine on three scooter operators.",
+            "https://example.com/rome-scooter-fine",
+        )
+        national_fine = article(
+            "national-antitrust-fine",
+            "National regulator fines major banks for price fixing",
+            "The regulator imposed a binding nationwide antitrust penalty.",
+            "https://example.com/national-antitrust-fine",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([scooter_fine, national_fine], generator)
+
+        self.assertNotIn("rome-scooter-fine", generator.prompts[0])
+        self.assertIn("national-antitrust-fine", generator.prompts[0])
+
+    def test_excludes_impersonation_scam_advisory_without_enforcement_before_ai(self):
+        scam_advisory = article(
+            "mica-scam-warning",
+            "EU regulator warns of MiCA impersonation scams",
+            "Fraudsters impersonated regulators, but no enforcement action or material loss was reported.",
+            "https://example.com/mica-scam-warning",
+        )
+        enforcement = article(
+            "mica-enforcement",
+            "EU regulator closes unregistered crypto firms under MiCA",
+            "The regulator ordered the firms to close and froze assets today.",
+            "https://example.com/mica-enforcement",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([scam_advisory, enforcement], generator)
+
+        self.assertNotIn("mica-scam-warning", generator.prompts[0])
+        self.assertIn("mica-enforcement", generator.prompts[0])
+
+    def test_excludes_internally_conflicting_revenue_growth_series_before_ai(self):
+        conflicting = article(
+            "ddn-conflicting-growth",
+            "DDN expects 2026 revenue of $1 billion on surging AI demand",
+            "Revenue rose from $400 million in 2024 to $5 billion in 2025 and is expected to reach $1 billion in 2026.",
+            "https://example.com/ddn-conflicting-growth",
+        )
+        coherent = article(
+            "ddn-coherent-growth",
+            "Storage company expects 2026 revenue of $1 billion",
+            "Revenue rose from $400 million in 2024 to $500 million in 2025 and is expected to reach $1 billion in 2026.",
+            "https://example.com/ddn-coherent-growth",
+        )
+        generator = FakeGenerator("[]")
+
+        select_and_summarize([conflicting, coherent], generator)
+
+        self.assertNotIn("ddn-conflicting-growth", generator.prompts[0])
+        self.assertIn("ddn-coherent-growth", generator.prompts[0])
+
     def test_excludes_repackaged_old_event_but_keeps_new_followup_and_future_effective_date(self):
         stale_event = article(
             "stale-difc-rule",
@@ -1043,6 +1217,137 @@ class NewsSelectorTests(unittest.TestCase):
             {
                 "title": "영국 AI 보안 테스트 중 모델 오작동 발생",
                 "content": "영국 인공지능 보안연구소의 시험에서 오픈AI와 안스로픽 모델의 문제 행동이 관찰됐습니다.",
+            }
+        ]
+
+        selected = select_and_summarize(
+            [source],
+            FakeGenerator(response),
+            recent_news=recent_news,
+        )
+
+        self.assertEqual(selected, [])
+
+    def test_deduplicates_same_korean_tech_selloff_across_market_angles(self):
+        market_articles = [
+            article(
+                "kospi-selloff",
+                "Wall Street tech selloff sends KOSPI down 4.6%",
+                "The KOSPI fell 4.6% to 6,296.38 as US technology shares declined.",
+                "https://example.com/kospi-selloff",
+            ),
+            article(
+                "asia-tech-selloff",
+                "SK Hynix slides 9.71% as Asian tech shares follow Wall Street lower",
+                "Samsung Electronics fell 6.13% as the US technology selloff spread to Korea.",
+                "https://example.com/asia-tech-selloff",
+            ),
+            article(
+                "ai-stocks-selloff",
+                "AI stocks reverse as KOSPI falls 4%",
+                "Korean AI-related shares declined during the same technology selloff.",
+                "https://example.com/ai-stocks-selloff",
+            ),
+        ]
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "kospi-selloff",
+                "source_title": "Wall Street tech selloff sends KOSPI down 4.6%",
+                "title": "월스트리트 기술주 하락으로 코스피 4.6% 급락",
+                "content": "미국 기술주 매도세가 확산되며 코스피가 4.6% 하락한 6,296.38을 기록했습니다.",
+                "importance_score": 9,
+                "category": "market",
+                "news_type": "breaking",
+                "selection_reason": "같은 날 미국 기술주 하락이 한국 증시로 확산됐습니다."
+            },
+            {
+                "temp_id": 1,
+                "source_ref": "asia-tech-selloff",
+                "source_title": "SK Hynix slides 9.71% as Asian tech shares follow Wall Street lower",
+                "title": "SK하이닉스 9.71% 급락 등 아시아 기술주 하락",
+                "content": "미국 기술주 하락 여파로 SK하이닉스가 9.71%, 삼성전자가 6.13% 하락했습니다.",
+                "importance_score": 9,
+                "category": "market",
+                "news_type": "breaking",
+                "selection_reason": "같은 기술주 매도세가 아시아 시장에 확산됐습니다."
+            },
+            {
+                "temp_id": 2,
+                "source_ref": "ai-stocks-selloff",
+                "source_title": "AI stocks reverse as KOSPI falls 4%",
+                "title": "AI 관련주, 코스피 4% 하락과 함께 약세",
+                "content": "같은 기술주 매도세로 한국 코스피와 AI 관련주가 4% 안팎 하락했습니다.",
+                "importance_score": 8,
+                "category": "market",
+                "news_type": "new_development",
+                "selection_reason": "같은 날 한국 기술주가 동반 하락했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize(market_articles, FakeGenerator(response))
+
+        self.assertEqual(len(selected), 1)
+
+    def test_deduplicates_same_company_quarterly_results_and_dividend_angle(self):
+        source = article(
+            "dbs-dividend-angle",
+            "DBS raises dividend to 81 cents as second-quarter profit rises 9%",
+            "DBS reported second-quarter net profit and declared an 81-cent dividend.",
+            "https://example.com/dbs-dividend-angle",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "dbs-dividend-angle",
+                "source_title": "DBS raises dividend to 81 cents as second-quarter profit rises 9%",
+                "title": "DBS, 2분기 이익 증가에 81센트 배당",
+                "content": "DBS가 2분기 순이익이 9% 증가하며 81센트 배당을 선언했습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "follow_up",
+                "selection_reason": "DBS의 같은 2분기 실적과 배당이 발표됐습니다."
+            }
+        ]"""
+        recent_news = [
+            {
+                "title": "DBS 2분기 순이익 9% 증가, 30억8천만 싱가포르달러 기록",
+                "content": "DBS가 2분기 순이익 30억8천만 싱가포르달러를 기록해 전년보다 9% 증가했습니다.",
+            }
+        ]
+
+        selected = select_and_summarize(
+            [source],
+            FakeGenerator(response),
+            recent_news=recent_news,
+        )
+
+        self.assertEqual(selected, [])
+
+    def test_deduplicates_same_government_industrial_ai_policy(self):
+        source = article(
+            "industry-ai-policy",
+            "Korea announces AI manufacturing innovation for major industries",
+            "The government plan covers steel, shipbuilding, autos, physical AI and humanoids.",
+            "https://example.com/industry-ai-policy",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "industry-ai-policy",
+                "source_title": "Korea announces AI manufacturing innovation for major industries",
+                "title": "정부, 주력산업 AI 제조 혁신·피지컬 AI 도입 발표",
+                "content": "한국 정부가 철강·조선·자동차 등 주력산업에 AI 공정과 피지컬 AI를 도입한다고 발표했습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "같은 산업 AI 전환 계획의 세부 내용입니다."
+            }
+        ]"""
+        recent_news = [
+            {
+                "title": "정부, 주력 산업 AI 전환 및 휴머노이드 개발 추진",
+                "content": "한국 정부가 철강·조선·자동차 등 10대 주력산업에 AI를 접목하고 특화 휴머노이드를 개발한다고 발표했습니다.",
             }
         ]
 
@@ -1653,6 +1958,81 @@ class NewsSelectorTests(unittest.TestCase):
             [8, 8],
         )
 
+    def test_caps_nonfinal_regulatory_review_at_eight(self):
+        source = article(
+            "sec-listing-delay",
+            "SEC delays decision on Nasdaq $5 million listing rule",
+            "The SEC postponed approval while it continues reviewing the proposal.",
+            "https://example.com/sec-listing-delay",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "sec-listing-delay",
+                "source_title": "SEC delays decision on Nasdaq $5 million listing rule",
+                "title": "SEC, 나스닥 5백만달러 상장 규칙 승인 보류",
+                "content": "미국 증권거래위원회가 최소 시장가치 5백만달러 상장 규칙의 승인을 보류했습니다.",
+                "importance_score": 9,
+                "category": "market",
+                "news_type": "new_development",
+                "selection_reason": "규제기관이 규칙 승인을 연기했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["importance_score"], 8)
+
+    def test_caps_ordinary_corporate_acquisition_at_eight(self):
+        source = article(
+            "ice-marketaxess-deal",
+            "ICE agrees to acquire MarketAxess for $5.7 billion",
+            "The exchange operator signed an agreement to buy the bond platform.",
+            "https://example.com/ice-marketaxess-deal",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "ice-marketaxess-deal",
+                "source_title": "ICE agrees to acquire MarketAxess for $5.7 billion",
+                "title": "ICE, 마켓액세스 57억달러에 인수",
+                "content": "ICE가 전자 채권 거래 플랫폼 마켓액세스를 57억달러에 인수하기로 합의했습니다.",
+                "importance_score": 9,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "대형 기업 인수 계약이 체결됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["importance_score"], 8)
+
+    def test_caps_ordinary_software_acquisition_at_eight(self):
+        source = article(
+            "software-acquisition",
+            "Oracle agrees to acquire a software company",
+            "The companies signed an ordinary acquisition agreement.",
+            "https://example.com/software-acquisition",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "software-acquisition",
+                "source_title": "Oracle agrees to acquire a software company",
+                "title": "오라클, 소프트웨어 기업 인수 합의",
+                "content": "오라클이 소프트웨어 기업을 인수하기로 합의했습니다.",
+                "importance_score": 9,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "일반적인 기업 인수 계약이 체결됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["importance_score"], 8)
+
     def test_rejects_percentage_growth_without_a_named_metric(self):
         source = article(
             "ambiguous-growth",
@@ -1729,6 +2109,191 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(
             [item["provider_article_id"] for item in selected],
             ["fund-return-correct"],
+        )
+
+    def test_normalizes_jobless_claim_count_as_level_not_increase_amount(self):
+        source = article(
+            "us-jobless-claims",
+            "US weekly jobless claims rise to 199,000",
+            "Initial applications increased to 199,000 from 195,000 last week.",
+            "https://example.com/us-jobless-claims",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "us-jobless-claims",
+                "source_title": "US weekly jobless claims rise to 199,000",
+                "title": "미국 실업급여 신청 199,000명 증가",
+                "content": "미국 주간 실업급여 신청이 199,000명으로 증가했습니다.",
+                "importance_score": 8,
+                "category": "indicator",
+                "news_type": "official_announcement",
+                "selection_reason": "미국의 새 주간 실업급여 신청 건수가 발표됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            selected[0]["normalized_title"],
+            "미국 실업급여 신청 199,000건으로 증가",
+        )
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "미국 주간 실업급여 신청이 199,000건으로 증가했습니다.",
+        )
+
+    def test_normalizes_million_currency_abbreviation_for_korean_readers(self):
+        source = article(
+            "national-euro-fine",
+            "National regulator imposes EUR 2.675M antitrust fine",
+            "The regulator imposed a 2.675 million euro binding penalty.",
+            "https://example.com/national-euro-fine",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "national-euro-fine",
+                "source_title": "National regulator imposes EUR 2.675M antitrust fine",
+                "title": "규제기관, 2.675M 유로 과징금 부과",
+                "content": "규제기관이 가격 담합에 2.675M 유로의 과징금을 부과했습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "구속력 있는 과징금이 새로 부과됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            selected[0]["normalized_title"],
+            "규제기관, 267만5천 유로 과징금 부과",
+        )
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "규제기관이 가격 담합에 267만5천 유로의 과징금을 부과했습니다.",
+        )
+
+    def test_normalizes_singapore_dollar_amount_and_cents(self):
+        source = article(
+            "dbs-results-currency",
+            "DBS second-quarter profit rises 9% to S$3.08 billion",
+            "DBS declared a dividend of 81 Singapore cents per share.",
+            "https://example.com/dbs-results-currency",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "dbs-results-currency",
+                "source_title": "DBS second-quarter profit rises 9% to S$3.08 billion",
+                "title": "DBS 2분기 순이익 9% 증가 S$30.8억 기록",
+                "content": "DBS가 2분기 순이익 S$30.8억 달러를 기록하고 81센트 배당을 선언했습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "DBS의 새 분기 실적과 배당이 발표됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            selected[0]["normalized_title"],
+            "DBS 2분기 순이익 9% 증가 30억8천만 싱가포르달러 기록",
+        )
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "DBS가 2분기 순이익 30억8천만 싱가포르달러를 기록하고 81싱가포르센트 배당을 선언했습니다.",
+        )
+
+    def test_normalizes_south_african_rand_name(self):
+        source = article(
+            "rand-intervention-terms",
+            "South African rand rises after central bank intervention",
+            "The rand strengthened after the South African Reserve Bank intervened.",
+            "https://example.com/rand-intervention-terms",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "rand-intervention-terms",
+                "source_title": "South African rand rises after central bank intervention",
+                "title": "남아공Rand, 중앙은행 개입 후 상승",
+                "content": "남아공Rand은 중앙은행의 외환시장 개입 이후 상승했습니다.",
+                "importance_score": 8,
+                "category": "market",
+                "news_type": "official_announcement",
+                "selection_reason": "중앙은행의 새 시장 개입이 발표됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            selected[0]["normalized_title"],
+            "남아프리카공화국 랜드화, 중앙은행 개입 후 상승",
+        )
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "남아프리카공화국 랜드화는 중앙은행의 외환시장 개입 이후 상승했습니다.",
+        )
+
+    def test_rejects_transaction_summary_that_replaces_primary_company_with_history(self):
+        source = article(
+            "de-beers-wrong-actor",
+            "Anglo American plans sale of its 85% De Beers stake",
+            "Anglo American is seeking a buyer; the Oppenheimer family was a former owner.",
+            "https://example.com/de-beers-wrong-actor",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "de-beers-wrong-actor",
+                "source_title": "Anglo American plans sale of its 85% De Beers stake",
+                "title": "앵글로 아메리칸, 디비어스 지분 매각 추진",
+                "content": "오펜하이머가 디비어스 지분을 매각하고 앙골라 아메리칸이 85%를 인수할 계획입니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "new_development",
+                "selection_reason": "디비어스 지분 매각 계획이 발표됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_normalizes_anglo_american_name_when_actor_is_correct(self):
+        source = article(
+            "de-beers-correct-actor",
+            "Anglo American plans sale of its 85% De Beers stake",
+            "Anglo American announced plans to sell its controlling stake.",
+            "https://example.com/de-beers-correct-actor",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "de-beers-correct-actor",
+                "source_title": "Anglo American plans sale of its 85% De Beers stake",
+                "title": "앙골라 아메리칸, 디비어스 지분 매각 추진",
+                "content": "앙골라 아메리칸이 디비어스 지분 85% 매각을 추진한다고 발표했습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "new_development",
+                "selection_reason": "지배주주가 지분 매각 계획을 발표했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            selected[0]["normalized_title"],
+            "앵글로 아메리칸, 디비어스 지분 매각 추진",
+        )
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "앵글로 아메리칸이 디비어스 지분 85% 매각을 추진한다고 발표했습니다.",
         )
 
     def test_normalizes_goldman_sachs_name(self):

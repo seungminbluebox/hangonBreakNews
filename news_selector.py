@@ -146,6 +146,12 @@ ROUTINE_MARKET_QUOTE_MARKERS = (
 )
 EVENT_TOKEN_SYNONYMS = (
     ("연방항공청", "faa"),
+    ("인공지능", "ai"),
+    ("주력 산업", "주력산업"),
+    ("ai 관련 주식", "기술주"),
+    ("ai 관련주", "기술주"),
+    ("ai주식", "기술주"),
+    ("kospi", "코스피"),
     ("미국주식시장", "미국 주식시장"),
     ("역사적", "사상"),
     ("고점", "최고치"),
@@ -154,6 +160,8 @@ EVENT_TOKEN_SYNONYMS = (
     ("원유", "유가"),
     ("급등", "상승"),
     ("급락", "하락"),
+    ("매도세", "하락"),
+    ("약세", "하락"),
 )
 EVENT_GENERIC_TOKENS = {
     "상반기",
@@ -397,6 +405,31 @@ def _is_repackaged_old_event(article: dict) -> bool:
     )
 
 
+def _has_conflicting_revenue_growth_series(text: str) -> bool:
+    if "revenue" not in text or not any(
+        marker in text
+        for marker in ("surging", "growth", "rose from", "increased from")
+    ):
+        return False
+
+    values_by_year = {}
+    for match in re.finditer(
+        r"\$?\s*(\d+(?:\.\d+)?)\s*(million|billion)\b[^.]{0,35}?\b((?:19|20)\d{2})\b",
+        text,
+    ):
+        amount_text, unit, year_text = match.groups()
+        amount = Decimal(amount_text)
+        if unit == "billion":
+            amount *= Decimal("1000")
+        values_by_year[int(year_text)] = amount
+
+    ordered_values = [values_by_year[year] for year in sorted(values_by_year)]
+    return len(ordered_values) >= 3 and any(
+        later < earlier
+        for earlier, later in zip(ordered_values, ordered_values[1:])
+    )
+
+
 def _is_low_value_item(article: dict) -> bool:
     title = (article.get("raw_title") or "").casefold()
     description = (article.get("raw_description") or "").casefold()
@@ -428,6 +461,92 @@ def _is_low_value_item(article: dict) -> bool:
             "승인",
         )
     )
+    if _has_conflicting_revenue_growth_series(description):
+        return True
+    if (
+        any(marker in title for marker in ("launch", "unveil", "introduce"))
+        and any(
+            marker in text
+            for marker in (
+                "whisky",
+                "whiskey",
+                "bottle",
+                "beer",
+                "four-door model",
+                "pickup name",
+                "starting price",
+            )
+        )
+        and not any(
+            marker in text
+            for marker in (
+                "sales rose",
+                "orders reached",
+                "production started",
+                "began production",
+                "factory investment",
+                "signed contract",
+            )
+        )
+    ):
+        return True
+    if (
+        "baggage" in text
+        and "fee" in text
+        and any(marker in text for marker in ("will charge", "to charge", "from 202"))
+    ):
+        return True
+    if (
+        any(marker in text for marker in ("rand", "yen", "currency"))
+        and any(
+            marker in text
+            for marker in ("holds steady", "held steady", "remained stable")
+        )
+        or (
+            any(marker in text for marker in ("rand", "yen", "currency"))
+            and re.search(r"\bstable\b", text)
+        )
+    ) and not any(
+        marker in text
+        for marker in (
+            "intervention",
+            "rate decision",
+            "capital control",
+            "new rule",
+        )
+    ):
+        return True
+    if (
+        any(marker in title for marker in ("warns", "warning"))
+        and any(marker in text for marker in ("could", " may ", "future", "risk"))
+        and any(marker in text for marker in ("interview", "said", "opinion"))
+        and not any(
+            marker in text
+            for marker in ("new report", "test results", "new data", "enforcement")
+        )
+    ):
+        return True
+    if (
+        any(marker in text for marker in ("e-scooter", "electric scooter"))
+        and any(marker in text for marker in ("city", "rome", "municipal"))
+        and any(marker in text for marker in ("fine", "penalty"))
+    ):
+        return True
+    if (
+        "impersonation scam" in text
+        and any(marker in text for marker in ("warns", "warning", "advisory"))
+        and (
+            any(
+                marker in text
+                for marker in ("no enforcement", "no material loss", "no arrests")
+            )
+            or not any(
+                marker in text
+                for marker in ("ordered", "froze assets", "arrested", "charged")
+            )
+        )
+    ):
+        return True
     if "market outlook" in title and any(
         marker in title for marker in ("historical high", "what to expect")
     ):
@@ -813,6 +932,56 @@ def _billion_to_eok_equivalents(source_text: str) -> list[tuple[str, str]]:
     return equivalents
 
 
+def _format_korean_integer_amount(amount: int) -> str:
+    parts = []
+    eok_count, amount = divmod(amount, 100_000_000)
+    if eok_count:
+        parts.append(f"{eok_count}억")
+        remainder_units = (
+            (10_000_000, "천만"),
+            (1_000_000, "백만"),
+            (100_000, "십만"),
+            (10_000, "만"),
+            (1_000, "천"),
+        )
+    else:
+        remainder_units = (
+            (10_000, "만"),
+            (1_000, "천"),
+        )
+    for unit_value, unit_name in remainder_units:
+        unit_count, amount = divmod(amount, unit_value)
+        if unit_count:
+            parts.append(f"{unit_count}{unit_name}")
+    if amount:
+        parts.append(f"{amount:,}")
+    return "".join(parts) or "0"
+
+
+def _format_decimal_eok_amount(amount_text: str) -> str:
+    won_amount = Decimal(amount_text) * Decimal("100000000")
+    if won_amount != won_amount.to_integral_value():
+        return f"{amount_text}억"
+    return _format_korean_integer_amount(int(won_amount))
+
+
+def _million_to_korean_equivalents(source_text: str) -> list[tuple[str, str]]:
+    equivalents = []
+    for match in re.finditer(
+        r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:m\b|million\b)",
+        source_text,
+        flags=re.IGNORECASE,
+    ):
+        source_amount = match.group(1)
+        full_amount = Decimal(source_amount) * Decimal("1000000")
+        if full_amount != full_amount.to_integral_value():
+            continue
+        equivalents.append(
+            (source_amount, _format_korean_integer_amount(int(full_amount)))
+        )
+    return equivalents
+
+
 def _normalize_known_korean_terms(article: dict, value: str) -> str:
     source_text = " ".join(
         article.get(field) or ""
@@ -823,6 +992,9 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
     if "goldman sachs" in source_text:
         value = value.replace("골드만 사스", "골드만삭스")
         value = value.replace("골드만 사츠", "골드만삭스")
+    if "anglo american" in source_text:
+        value = value.replace("앙골라 아메리칸", "앵글로 아메리칸")
+        value = value.replace("앵글로우 아메리칸", "앵글로 아메리칸")
     if "network advertising initiative" in source_text:
         value = value.replace(
             "네트워크 광고 주도권",
@@ -835,6 +1007,39 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
             f"{eok_amount}억 달러",
             value,
         )
+    value = re.sub(
+        r"(?<![\d.])(\d+(?:\.\d+)?)\s*M\s*(유로|달러)",
+        lambda match: (
+            f"{_format_korean_integer_amount(int(Decimal(match.group(1)) * Decimal('1000000')))} "
+            f"{match.group(2)}"
+        ),
+        value,
+        flags=re.IGNORECASE,
+    )
+    if "s$" in source_text or "singapore cent" in source_text:
+        value = re.sub(
+            r"S\$\s*(\d+(?:\.\d+)?)\s*억(?:\s*달러)?",
+            lambda match: (
+                f"{_format_decimal_eok_amount(match.group(1))} 싱가포르달러"
+            ),
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(
+            r"(?<!싱가포르)(\d+(?:\.\d+)?)센트",
+            r"\1싱가포르센트",
+            value,
+        )
+    if "south african rand" in source_text:
+        value = value.replace("남아공Rand은", "남아프리카공화국 랜드화는")
+        value = value.replace("남아공Rand", "남아프리카공화국 랜드화")
+        value = value.replace("남아공 Rand", "남아프리카공화국 랜드화")
+    if "jobless claims" in source_text and re.search(
+        r"(?:rise|rose|increase|increased)\s+to\s+\d",
+        source_text,
+    ):
+        value = re.sub(r"(\d[\d,]*)명으로 증가", r"\1건으로 증가", value)
+        value = re.sub(r"(\d[\d,]*)명 증가", r"\1건으로 증가", value)
     if "auckland" in source_text:
         value = value.replace("아크랜드", "오클랜드")
     if "boe/d" in source_text:
@@ -985,6 +1190,29 @@ def _has_misattributed_fund_return(
     )
 
 
+def _misstates_primary_transaction_actor(
+    article: dict,
+    title: str,
+    content: str,
+) -> bool:
+    source_title = (article.get("raw_title") or "").casefold().strip()
+    primary_actor_requirements = (
+        (r"^anglo american\b", "앵글로 아메리칸", ("오펜하이머",)),
+    )
+    for pattern, korean_actor, misleading_leads in primary_actor_requirements:
+        if not re.search(pattern, source_title):
+            continue
+        if korean_actor not in title or korean_actor not in content:
+            return True
+        if any(
+            value.lstrip().startswith(misleading_lead)
+            for value in (title, content)
+            for misleading_lead in misleading_leads
+        ):
+            return True
+    return False
+
+
 def _normalize_importance_score(article: dict, importance_score):
     if importance_score < 9:
         return importance_score
@@ -1001,7 +1229,6 @@ def _normalize_importance_score(article: dict, importance_score):
         "financial crisis",
         "bank run",
         "sovereign default",
-        "war",
         "invasion",
         "unexpected rate",
         "surprise rate",
@@ -1017,7 +1244,9 @@ def _normalize_importance_score(article: dict, importance_score):
         "예상 밖 금리",
         "깜짝 금리",
     )
-    has_systemic_marker = any(marker in source_text for marker in systemic_markers)
+    has_systemic_marker = any(
+        marker in source_text for marker in systemic_markers
+    ) or bool(re.search(r"\bwar\b", source_text))
 
     routine_market_record = any(
         marker in source_text
@@ -1046,6 +1275,43 @@ def _normalize_importance_score(article: dict, importance_score):
         )
     )
     if routine_market_record and not has_systemic_marker:
+        return 8
+
+    nonfinal_regulatory_review = any(
+        marker in source_text
+        for marker in (
+            "delays decision",
+            "defers decision",
+            "postponed approval",
+            "approval delayed",
+            "approval on hold",
+            "continues reviewing",
+            "승인 보류",
+            "심사 연기",
+            "결정 연기",
+        )
+    ) and any(
+        marker in source_text
+        for marker in ("rule", "regulation", "proposal", "listing", "규칙", "규제")
+    )
+    if nonfinal_regulatory_review and not has_systemic_marker:
+        return 8
+
+    ordinary_corporate_transaction = any(
+        marker in source_text
+        for marker in (
+            "agrees to acquire",
+            "agreement to acquire",
+            "plans sale",
+            "stake sale",
+            "acquisition agreement",
+            "merger agreement",
+            "인수 계약",
+            "지분 매각",
+            "합병 계약",
+        )
+    )
+    if ordinary_corporate_transaction and not has_systemic_marker:
         return 8
 
     earnings_story = any(
@@ -1162,6 +1428,10 @@ def _unsupported_summary_numbers(article: dict, title: str, content: str) -> set
         _normalize_number(eok_amount)
         for _, eok_amount in _billion_to_eok_equivalents(source_text)
     )
+    for _, eok_amount in _billion_to_eok_equivalents(source_text):
+        source_numbers.update(_numeric_tokens(_format_decimal_eok_amount(eok_amount)))
+    for _, korean_amount in _million_to_korean_equivalents(source_text):
+        source_numbers.update(_numeric_tokens(korean_amount))
     summary_numbers = _numeric_tokens(f"{title} {content}")
     return summary_numbers - source_numbers
 
@@ -1221,12 +1491,115 @@ def _distinctive_event_tokens(value: str) -> set[str]:
     }
 
 
+def _has_same_company_reporting_signature(
+    first_title: str,
+    first_content: str,
+    second_title: str,
+    second_content: str,
+) -> bool:
+    first_text = f"{first_title} {first_content}"
+    second_text = f"{second_title} {second_content}"
+    first_periods = set(re.findall(r"\d+분기", first_text))
+    second_periods = set(re.findall(r"\d+분기", second_text))
+    if not first_periods.intersection(second_periods):
+        return False
+
+    reporting_markers = (
+        "실적",
+        "매출",
+        "이익",
+        "순이익",
+        "배당",
+        "earnings",
+        "revenue",
+        "profit",
+        "dividend",
+    )
+    if not all(
+        any(marker in text.casefold() for marker in reporting_markers)
+        for text in (first_text, second_text)
+    ):
+        return False
+
+    reporting_tokens = {
+        "실적",
+        "매출",
+        "이익",
+        "순이익",
+        "배당",
+        "기록",
+        "증가",
+    }
+    first_entities = _distinctive_event_tokens(first_title) - reporting_tokens
+    second_entities = _distinctive_event_tokens(second_title) - reporting_tokens
+    return bool(first_entities & second_entities)
+
+
+def _has_same_market_selloff_signature(
+    first_title: str,
+    first_content: str,
+    second_title: str,
+    second_content: str,
+) -> bool:
+    first_tokens = _event_tokens(f"{first_title} {first_content}")
+    second_tokens = _event_tokens(f"{second_title} {second_content}")
+    if not all(
+        {"기술주", "하락"}.issubset(tokens)
+        for tokens in (first_tokens, second_tokens)
+    ):
+        return False
+    korean_market_markers = {
+        "한국",
+        "코스피",
+        "아시아",
+        "삼성전자",
+        "sk하이닉스",
+    }
+    return all(
+        bool(tokens & korean_market_markers)
+        for tokens in (first_tokens, second_tokens)
+    )
+
+
+def _has_same_industrial_ai_policy_signature(
+    first_title: str,
+    first_content: str,
+    second_title: str,
+    second_content: str,
+) -> bool:
+    first_tokens = _event_tokens(f"{first_title} {first_content}")
+    second_tokens = _event_tokens(f"{second_title} {second_content}")
+    required = {"정부", "ai", "주력산업"}
+    if not all(required.issubset(tokens) for tokens in (first_tokens, second_tokens)):
+        return False
+    industry_tokens = {"철강", "석유화학", "조선", "자동차", "바이오"}
+    return len((first_tokens & second_tokens) & industry_tokens) >= 2
+
+
 def _has_shared_event_signature(
     first_title: str,
     first_content: str,
     second_title: str,
     second_content: str,
 ) -> bool:
+    if _has_same_company_reporting_signature(
+        first_title,
+        first_content,
+        second_title,
+        second_content,
+    ) or _has_same_market_selloff_signature(
+        first_title,
+        first_content,
+        second_title,
+        second_content,
+    ) or _has_same_industrial_ai_policy_signature(
+        first_title,
+        first_content,
+        second_title,
+        second_content,
+    ):
+        return True
+
     first_tokens = _distinctive_event_tokens(first_title)
     second_tokens = _distinctive_event_tokens(second_title)
     shared_tokens = first_tokens & second_tokens
@@ -1305,6 +1678,27 @@ def _has_material_follow_up(article: dict, recent_item: dict) -> bool:
             recent_item.get("content") or "",
         )
     )
+    same_angle_event = _has_same_company_reporting_signature(
+        article.get("normalized_title") or "",
+        article.get("normalized_content") or "",
+        recent_item.get("title") or "",
+        recent_item.get("content") or "",
+    ) or _has_same_market_selloff_signature(
+        article.get("normalized_title") or "",
+        article.get("normalized_content") or "",
+        recent_item.get("title") or "",
+        recent_item.get("content") or "",
+    ) or _has_same_industrial_ai_policy_signature(
+        article.get("normalized_title") or "",
+        article.get("normalized_content") or "",
+        recent_item.get("title") or "",
+        recent_item.get("content") or "",
+    )
+    if same_angle_event and not any(
+        marker in current_text
+        for marker in ("정정", "재공시", "거래 중단", "서킷브레이커")
+    ):
+        return False
     if any(
         marker in current_text and marker not in recent_text
         for marker in MATERIAL_FOLLOW_UP_MARKERS
@@ -1446,8 +1840,12 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 아직 실행되지 않은 시험 일정·장기 목표와 기사 작성일보다 3일 넘게 오래된 사건을 새 후속 사실 없이 다시 소개한 기사
 - 자산운용사의 투자자 서한·보유종목 평가, 결정되지 않은 서비스·투자수단 검토, 업계 단체의 비구속적 지침
 - 판결·명령 없이 법원이 의문만 표시한 기사, 통상적인 항공 노선·코드셰어 확대, 새 촉매 없는 과거 주가 수익률 재소개
+- 실적·판매·생산·투자 변화 없는 소비재·주류·자동차 신제품 소개와 먼 미래의 소비자 수수료 변경
+- 새로운 정책·시장 개입 없이 통화가 안정세라는 단순 시황, 새 자료 없는 전문가 위험 경고, 지역 이동수단 과징금·피해 규모 없는 사기 주의보
+- 성장 기사 안에서 같은 매출 지표의 연도별 금액이 서로 모순되는 등 원문 자체의 수치 관계를 신뢰하기 어려운 기사
 
 속보일 필요는 없습니다. 의미 있는 새 경제 소식이면 모두 선택하세요. 기사에 있는 사실만 사용하세요.
+같은 시장 하락을 지수·개별 종목·산업 관점으로 나눈 기사, 같은 회사의 한 분기 실적을 배당·순이익 관점으로 나눈 기사, 같은 정부 정책의 세부 분야만 바꾼 기사는 동일 사건입니다. 가장 구체적인 하나만 선택하세요.
 선택하려면 누가 무엇을 새로 발표·결정·변경했거나 어떤 사건이 새로 발생했는지 명확히 말할 수 있어야 합니다.
 경제 초급 독자도 주체를 알 수 있도록 국가·기관·기업 이름을 제목이나 요약에 명시하세요. 원문에 국가가 있는데 생략하지 마세요.
 일반 영어 단어를 한국어 문장에 남기지 말고 자연스럽게 번역하세요. GPIF·FSSAI·OFS처럼 낯선 약어는 한국어 기관명이나 뜻을 먼저 쓰고 괄호 안에 약어를 적으세요.
@@ -1463,6 +1861,7 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 통제된 시험에서 관찰된 행동을 실제 시스템 탈출이나 현실 사고처럼 과장하지 말고, `중요한 지표입니다` 같은 편집자 평가를 덧붙이지 마세요.
 원문의 숫자와 단위를 그대로 사용하고 임의로 환산하거나 새로운 숫자를 만들지 마세요.
 펀드·지수·자회사의 수익률이나 실적을 기사에 함께 언급된 다른 기업의 수치로 바꾸지 마세요. 숫자를 쓸 때는 원문에서 그 숫자를 발표한 주체를 같은 문장에 명시하세요.
+`199,000건으로 증가`처럼 도달한 수준과 `199,000건 증가`처럼 증가분을 구분하세요. M·B 같은 영문 축약 단위와 S$ 같은 통화 표시는 한국어 독자가 오해하지 않도록 풀어 쓰세요.
 기사 종류와 무관하게 `영향 범위`, `변화 규모`, `시장 즉시성` 세 기준으로 중요도를 판단하세요.
 - 7~8점은 주요 경제 소식, 9~10점은 화면과 알림에서 긴급 속보로 사용됩니다.
 - 9점은 국가·전체 시장·주요 산업·세계적 기업에 미치는 범위, 평소보다 현저하거나 예상 밖인 변화, 가격과 기대에 빠르게 반영될 즉시성 중 두 가지 이상을 강하게 충족하는 굵직한 속보에만 사용하세요.
@@ -1470,6 +1869,7 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 8점은 주요 기업 실적·산업 변화·정책·규제처럼 영향이 크지만 광범위한 즉시 재평가까지 요구하지 않는 주요 경제 소식입니다.
 - 7점은 의미 있는 새 경제 사실이지만 영향 범위가 제한적인 소식입니다.
 - 일반적인 분기 실적, 단순 지수 최고치, 제품 공개, 결과 없는 회의에는 9~10점을 주지 마세요. 반대로 기업·정책·지정학 등 어떤 종류든 위 세 기준을 충족하면 속보로 평가하세요.
+- 규제안 심사·승인 보류처럼 최종 결정이 아닌 절차와 일반적인 기업 인수·지분 매각은 원칙적으로 최대 8점입니다.
 
 분류 기준:
 - `indicator`: 정부·중앙은행·공식기관이 발표한 물가·고용·성장률·생산·소비 등 수치형 경제지표
@@ -1646,6 +2046,17 @@ def select_and_summarize(
         ):
             LOGGER.warning(
                 "Discarding AI decision with misattributed fund return: "
+                "source_ref=%s",
+                source_ref,
+            )
+            continue
+        if _misstates_primary_transaction_actor(
+            articles[temp_id],
+            title,
+            content,
+        ):
+            LOGGER.warning(
+                "Discarding AI decision with incorrect primary transaction actor: "
                 "source_ref=%s",
                 source_ref,
             )
