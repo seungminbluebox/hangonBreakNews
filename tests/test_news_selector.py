@@ -768,7 +768,7 @@ class NewsSelectorTests(unittest.TestCase):
             self.assertNotIn(item["provider_article_id"], generator.prompts[0])
         self.assertIn("honda-halt", generator.prompts[0])
 
-    def test_excludes_future_consumer_fee_change_before_ai(self):
+    def test_keeps_announced_company_pricing_changes_before_ai(self):
         baggage_fee = article(
             "future-baggage-fee",
             "Jetstar to charge baggage fee from February 2027",
@@ -785,7 +785,7 @@ class NewsSelectorTests(unittest.TestCase):
 
         select_and_summarize([baggage_fee, airline_results], generator)
 
-        self.assertNotIn("future-baggage-fee", generator.prompts[0])
+        self.assertIn("future-baggage-fee", generator.prompts[0])
         self.assertIn("airline-results", generator.prompts[0])
 
     def test_excludes_routine_currency_stability_without_a_new_action_before_ai(self):
@@ -841,7 +841,7 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertNotIn("ai-risk-warning", generator.prompts[0])
         self.assertIn("ai-test-result", generator.prompts[0])
 
-    def test_excludes_minor_local_mobility_fine_before_ai(self):
+    def test_keeps_concrete_company_penalties_before_ai(self):
         scooter_fine = article(
             "rome-scooter-fine",
             "Rome fines Lime Bird and Dott over e-scooter services",
@@ -858,7 +858,7 @@ class NewsSelectorTests(unittest.TestCase):
 
         select_and_summarize([scooter_fine, national_fine], generator)
 
-        self.assertNotIn("rome-scooter-fine", generator.prompts[0])
+        self.assertIn("rome-scooter-fine", generator.prompts[0])
         self.assertIn("national-antitrust-fine", generator.prompts[0])
 
     def test_excludes_impersonation_scam_advisory_without_enforcement_before_ai(self):
@@ -2033,6 +2033,31 @@ class NewsSelectorTests(unittest.TestCase):
 
         self.assertEqual(selected[0]["importance_score"], 8)
 
+    def test_caps_takeover_deal_at_eight(self):
+        source = article(
+            "apollo-easyjet-takeover",
+            "Apollo reaches $7.7 billion deal to buy easyJet",
+            "Apollo agreed a takeover of the airline.",
+            "https://example.com/apollo-easyjet-takeover",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "apollo-easyjet-takeover",
+                "source_title": "Apollo reaches $7.7 billion deal to buy easyJet",
+                "title": "아폴로, 이지젯 77억 달러에 인수",
+                "content": "아폴로 글로벌이 영국 저비용 항공사 이지젯을 77억 달러에 인수하기로 합의했습니다.",
+                "importance_score": 9,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "항공사 인수 합의가 체결됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["importance_score"], 8)
+
     def test_rejects_percentage_growth_without_a_named_metric(self):
         source = article(
             "ambiguous-growth",
@@ -2143,6 +2168,85 @@ class NewsSelectorTests(unittest.TestCase):
             "미국 주간 실업급여 신청이 199,000건으로 증가했습니다.",
         )
 
+    def test_normalizes_jobless_claim_count_below_threshold_as_cases(self):
+        source = article(
+            "jobless-below-200k",
+            "US jobless claims stay below 200,000 for third week",
+            "Initial jobless claims remained below 20만 (200,000) for a third week.",
+            "https://example.com/jobless-below-200k",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "jobless-below-200k",
+                "source_title": "US jobless claims stay below 200,000 for third week",
+                "title": "미국 신규 실업수당 청구 3주 연속 20만명 하회",
+                "content": "미국 신규 실업수당 청구 건수가 3주 연속 20만명을 밑돌았습니다.",
+                "importance_score": 7,
+                "category": "indicator",
+                "news_type": "new_development",
+                "selection_reason": "미국의 새 주간 고용 지표가 발표됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            selected[0]["normalized_title"],
+            "미국 신규 실업수당 청구 3주 연속 20만건 하회",
+        )
+        self.assertIn("20만건", selected[0]["normalized_content"])
+
+    def test_rejects_incomplete_generated_title(self):
+        source = article(
+            "rwe-incomplete-title",
+            "RWE agrees $1.22 billion deal to cancel US offshore wind leases",
+            "RWE will cancel three leases and redirect the funds to gas projects.",
+            "https://example.com/rwe-incomplete-title",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "rwe-incomplete-title",
+                "source_title": "RWE agrees $1.22 billion deal to cancel US offshore wind leases",
+                "title": "RWE, 미국 해상풍력 임대 취소하고 12억2천만 달러 규모 가",
+                "content": "독일 에너지 기업 RWE가 미국 해상풍력 임대 3건을 취소하는 12억2천만 달러 규모 계약을 체결했습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "에너지 자산 운용 계획이 변경됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_rejects_title_number_missing_from_summary_body(self):
+        source = article(
+            "doordash-number-drift",
+            "DoorDash reports second-quarter revenue of $4.45 billion",
+            "Revenue rose while gross order value reached $33.1 billion.",
+            "https://example.com/doordash-number-drift",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "doordash-number-drift",
+                "source_title": "DoorDash reports second-quarter revenue of $4.45 billion",
+                "title": "도어대시, 2분기 매출 44.5억 달러 달성",
+                "content": "도어대시의 2분기 총주문액이 331억 달러를 기록했습니다.",
+                "importance_score": 8,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "도어대시가 새 분기 실적을 발표했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
     def test_normalizes_million_currency_abbreviation_for_korean_readers(self):
         source = article(
             "national-euro-fine",
@@ -2188,7 +2292,7 @@ class NewsSelectorTests(unittest.TestCase):
                 "source_ref": "dbs-results-currency",
                 "source_title": "DBS second-quarter profit rises 9% to S$3.08 billion",
                 "title": "DBS 2분기 순이익 9% 증가 S$30.8억 기록",
-                "content": "DBS가 2분기 순이익 S$30.8억 달러를 기록하고 81센트 배당을 선언했습니다.",
+                "content": "DBS가 2분기 순이익이 9% 증가한 S$30.8억 달러를 기록하고 81센트 배당을 선언했습니다.",
                 "importance_score": 8,
                 "category": "corporate",
                 "news_type": "official_announcement",
@@ -2204,7 +2308,7 @@ class NewsSelectorTests(unittest.TestCase):
         )
         self.assertEqual(
             selected[0]["normalized_content"],
-            "DBS가 2분기 순이익 30억8천만 싱가포르달러를 기록하고 81싱가포르센트 배당을 선언했습니다.",
+            "DBS가 2분기 순이익이 9% 증가한 30억8천만 싱가포르달러를 기록하고 81싱가포르센트 배당을 선언했습니다.",
         )
 
     def test_normalizes_south_african_rand_name(self):
@@ -2370,7 +2474,7 @@ class NewsSelectorTests(unittest.TestCase):
                 "source_ref": "manulife-results",
                 "source_title": "Manulife reports second-quarter earnings",
                 "title": "맨라이프, 2026년 2분기 실적 발표",
-                "content": "맨라이프의 핵심 주당순이익이 16% 증가하고 순이익이 0.3억 달러 늘어났습니다.",
+                "content": "맨라이프의 2026년 2분기 핵심 주당순이익이 16% 증가하고 순이익이 0.3억 달러 늘어났습니다.",
                 "importance_score": 8,
                 "category": "corporate",
                 "news_type": "official_announcement",
@@ -2382,7 +2486,7 @@ class NewsSelectorTests(unittest.TestCase):
 
         self.assertEqual(
             selected[0]["normalized_content"],
-            "맨라이프의 핵심 주당순이익이 16% 증가하고 순이익이 3억 달러 늘어났습니다.",
+            "맨라이프의 2026년 2분기 핵심 주당순이익이 16% 증가하고 순이익이 3억 달러 늘어났습니다.",
         )
 
     def test_normalizes_known_company_transliteration(self):
@@ -2592,7 +2696,7 @@ class NewsSelectorTests(unittest.TestCase):
                 "source_ref": "nz-unemployment",
                 "source_title": "New Zealand unemployment reaches 5.6%, highest in 11 years",
                 "title": "뉴질랜드 실업률 11년 만에 최고",
-                "content": "뉴질랜드 실업률이 5.6%로 상승했습니다. 이는 노동시장 약화를 보여주는 중요한 지표입니다.",
+                "content": "뉴질랜드 실업률이 11년 만에 최고인 5.6%로 상승했습니다. 이는 노동시장 약화를 보여주는 중요한 지표입니다.",
                 "importance_score": 8,
                 "category": "indicator",
                 "news_type": "official_announcement",
@@ -2611,7 +2715,55 @@ class NewsSelectorTests(unittest.TestCase):
         )
         self.assertEqual(
             selected[1]["normalized_content"],
-            "뉴질랜드 실업률이 5.6%로 상승했습니다.",
+            "뉴질랜드 실업률이 11년 만에 최고인 5.6%로 상승했습니다.",
+        )
+
+    def test_prompt_contract_keeps_broad_coverage_and_requires_precise_attribution(self):
+        source = article(
+            "regional-supply-contract",
+            "Regional manufacturer signs binding supply agreement",
+            "The company signed a new binding contract with a named customer.",
+            "https://example.com/regional-supply-contract",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "regional-supply-contract",
+                "source_title": "Regional manufacturer signs binding supply agreement",
+                "title": "지역 제조사, 신규 공급계약 체결",
+                "content": "지역 제조사가 고객사와 구속력 있는 신규 공급계약을 체결했습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "기업의 새 공급계약이 체결됐습니다."
+            }
+        ]"""
+
+        class ContractAwareGenerator:
+            def __init__(self):
+                self.prompts = []
+
+            def __call__(self, prompt):
+                self.prompts.append(prompt)
+                required_fragments = (
+                    "구체적인 경제 사건이면 7점 후보",
+                    "원인·행동·대응 주체",
+                    "탐사 결과를 확인된 매장지",
+                    "통제된 보안 시험과 실제 외부 시스템 침해",
+                    "영향받는 기업·기관·규칙·사건",
+                    "제목의 모든 핵심 숫자를 본문에도",
+                    "가급적 35자, 완결성을 위해 최대 55자",
+                )
+                text = response if all(
+                    fragment in prompt for fragment in required_fragments
+                ) else "[]"
+                return SimpleNamespace(text=text)
+
+        selected = select_and_summarize([source], ContractAwareGenerator())
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["regional-supply-contract"],
         )
 
     def test_rejects_summary_without_polite_report_ending(self):

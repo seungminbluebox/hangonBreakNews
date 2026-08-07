@@ -491,12 +491,6 @@ def _is_low_value_item(article: dict) -> bool:
     ):
         return True
     if (
-        "baggage" in text
-        and "fee" in text
-        and any(marker in text for marker in ("will charge", "to charge", "from 202"))
-    ):
-        return True
-    if (
         any(marker in text for marker in ("rand", "yen", "currency"))
         and any(
             marker in text
@@ -524,12 +518,6 @@ def _is_low_value_item(article: dict) -> bool:
             marker in text
             for marker in ("new report", "test results", "new data", "enforcement")
         )
-    ):
-        return True
-    if (
-        any(marker in text for marker in ("e-scooter", "electric scooter"))
-        and any(marker in text for marker in ("city", "rome", "municipal"))
-        and any(marker in text for marker in ("fine", "penalty"))
     ):
         return True
     if (
@@ -1040,6 +1028,12 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
     ):
         value = re.sub(r"(\d[\d,]*)명으로 증가", r"\1건으로 증가", value)
         value = re.sub(r"(\d[\d,]*)명 증가", r"\1건으로 증가", value)
+    if "jobless claims" in source_text:
+        value = re.sub(
+            r"(\d[\d,.]*(?:만|천)?)(\s*)명",
+            r"\1\2건",
+            value,
+        )
     if "auckland" in source_text:
         value = value.replace("아크랜드", "오클랜드")
     if "boe/d" in source_text:
@@ -1306,9 +1300,19 @@ def _normalize_importance_score(article: dict, importance_score):
             "stake sale",
             "acquisition agreement",
             "merger agreement",
+            "agreed to buy",
+            "deal to buy",
+            "takeover agreement",
+            "acquisition of",
+            "buyout",
             "인수 계약",
             "지분 매각",
             "합병 계약",
+        )
+    ) or bool(
+        re.search(
+            r"\b(?:(?:agrees?|agreed|plans?|planned)\s+to\s+acquire|takeover)\b",
+            source_text,
         )
     )
     if ordinary_corporate_transaction and not has_systemic_marker:
@@ -1390,6 +1394,27 @@ def _is_valid_report_summary(content: str) -> bool:
         re.search(r"(?:습니다|니다)[.!?]?$", sentence) is not None
         for sentence in sentences
     )
+
+
+INCOMPLETE_TITLE_ENDINGS = (
+    "규모 가",
+    "위한",
+    "관련",
+    "따른",
+    "통해",
+    "대해",
+    "하며",
+    "하고",
+)
+
+
+def _has_incomplete_title(title: str) -> bool:
+    normalized = title.strip().rstrip(".!?…")
+    return any(normalized.endswith(ending) for ending in INCOMPLETE_TITLE_ENDINGS)
+
+
+def _title_numbers_missing_from_content(title: str, content: str) -> set[str]:
+    return _event_numeric_tokens(title) - _event_numeric_tokens(content)
 
 
 def _normalize_number(token: str) -> str:
@@ -1817,6 +1842,12 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 1. 새로운 사실: 최근 발생·발표·변경된 사건이거나 기존 사건에 새로운 수치나 진행 상황이 추가됨.
 2. 경제 관련성: 경제, 금융시장, 산업, 주요 기업, 규제·정책 또는 경제에 영향을 줄 지정학적 사건과 직접 관련됨.
 
+기업 규모나 지역 범위가 작더라도 주가·재무·고용·산업·규제에 영향을 주는 구체적인 경제 사건이면 7점 후보로 유지하세요.
+원인·행동·대응 주체를 뒤바꾸지 말고, 누가 무엇을 결정했고 누가 반대하거나 대응했는지 원문 관계를 그대로 쓰세요.
+탐사 결과를 확인된 매장지나 매장량 발견으로 확대하지 말고, 원문이 확정적으로 표현한 경우에만 `발견`을 사용하세요.
+통제된 보안 시험과 실제 외부 시스템 침해를 구분하고, 시험 환경인지 실제 사고인지 원문 범위를 보존하세요.
+법률·규제 기사는 영향받는 기업·기관·규칙·사건 중 식별 가능한 주체를 제목이나 요약에 명시하세요.
+
 다음은 제외하세요.
 - 새로운 사실이 없는 전망, 칼럼, 비교, 순위, 추천, 사용법, 회고, 단순 해설
 - 생활·상품·자동차 소개와 홍보성 기사
@@ -1828,7 +1859,7 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 지난달·지난 분기 사건에 대한 새로운 조치나 결과 없이 관계자의 평가만 추가한 기사
 - 후보 안에 동일 사건을 다룬 기사가 여러 개면 원문 정보가 가장 구체적인 하나만 선택
 - 최근 저장 뉴스와 같은 사건이면 제외. 단, 합의·승인·완료·취소·새 수치처럼 상태가 실제로 달라진 후속 보도는 `follow_up`으로 선택
-- 새 발표나 조치가 없는 업계 전망·역사적 수준 평가, 단순 실험 연구, 개인용 멤버십·혜택·수수료 변경
+- 새 발표나 조치가 없는 업계 전망·역사적 수준 평가, 단순 실험 연구, 개인용 멤버십·혜택 변경
 - 회사 실적·가이던스·시장점유율과 연결되지 않은 개별 상품 판매 기록, 정기 신고·납부 안내, 기업 순위·수상·명단 기사
 - 공항 편의 서비스 도입, 지역 상점 단속, 소비재 연구·생활 정보처럼 금융시장이나 주요 산업에 미치는 영향이 작은 기사
 - 최고경영자·최고재무책임자 교체가 아닌 통상적인 중간관리자 선임 기사
@@ -1840,8 +1871,8 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 아직 실행되지 않은 시험 일정·장기 목표와 기사 작성일보다 3일 넘게 오래된 사건을 새 후속 사실 없이 다시 소개한 기사
 - 자산운용사의 투자자 서한·보유종목 평가, 결정되지 않은 서비스·투자수단 검토, 업계 단체의 비구속적 지침
 - 판결·명령 없이 법원이 의문만 표시한 기사, 통상적인 항공 노선·코드셰어 확대, 새 촉매 없는 과거 주가 수익률 재소개
-- 실적·판매·생산·투자 변화 없는 소비재·주류·자동차 신제품 소개와 먼 미래의 소비자 수수료 변경
-- 새로운 정책·시장 개입 없이 통화가 안정세라는 단순 시황, 새 자료 없는 전문가 위험 경고, 지역 이동수단 과징금·피해 규모 없는 사기 주의보
+- 실적·판매·생산·투자 변화 없는 소비재·주류·자동차 신제품 소개
+- 새로운 정책·시장 개입 없이 통화가 안정세라는 단순 시황, 새 자료 없는 전문가 위험 경고, 피해 규모 없는 사기 주의보
 - 성장 기사 안에서 같은 매출 지표의 연도별 금액이 서로 모순되는 등 원문 자체의 수치 관계를 신뢰하기 어려운 기사
 
 속보일 필요는 없습니다. 의미 있는 새 경제 소식이면 모두 선택하세요. 기사에 있는 사실만 사용하세요.
@@ -1853,6 +1884,7 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 `ISR`은 `정보·감시·정찰(ISR)`처럼 뜻을 먼저 설명하고, 현지 통화는 어느 나라 달러인지 명시하세요.
 직역하면 뜻이 어색한 금융·경영 용어는 한국에서 통용되는 표현으로 옮기고, 확신할 수 없으면 해당 기사를 제외하세요.
 요약은 핵심 사실과 주요 수치·시점을 먼저 쓰고 110자 이내의 1~2문장으로 작성하세요.
+제목의 모든 핵심 숫자를 본문에도 같은 의미로 포함하고, 본문이 설명하지 않는 숫자를 제목에만 쓰지 마세요.
 퍼센트 수치를 쓸 때는 매출·순이익·생산량·가격처럼 무엇이 변했는지 반드시 같은 문장에 명시하세요. `40% 성장률`처럼 지표가 불분명한 표현은 금지합니다.
 요약의 모든 문장은 뉴스 독자에게 보고하듯 자연스러운 정중한 보고체로 쓰고 `했습니다.`, `됐습니다.`, `입니다.`처럼 끝내세요. 제목처럼 `상승`, `발표` 같은 명사형으로 끝내지 마세요.
 기사 정보가 부족하면 `TEXT_TOO_SHORT`, `N/A`, `내용이 부족합니다` 같은 대체 문구를 만들지 말고 해당 기사를 선택 결과에서 제외하세요.
@@ -1891,7 +1923,7 @@ JSON 리스트만 반환하세요. 선택할 기사가 없으면 []를 반환하
   "temp_id": 후보의 temp_id,
   "source_ref": 후보의 source_ref를 한 글자도 바꾸지 않고 복사,
   "source_title": 후보의 title을 한 글자도 바꾸지 않고 복사,
-  "title": 핵심 사건이 드러나는 35자 이내 한국어 제목,
+  "title": 핵심 사건이 드러나는 가급적 35자, 완결성을 위해 최대 55자 한국어 제목,
   "content": 확인된 사실만 담은 한국어 110자 이내 1~2문장 요약,
   "importance_score": 기존 저장 기준과 동일한 7~10,
   "category": "market" | "indicator" | "geopolitics" | "corporate",
@@ -2012,6 +2044,22 @@ def select_and_summarize(
             continue
         title = _normalize_known_korean_terms(articles[temp_id], title.strip())
         content = _normalize_known_korean_terms(articles[temp_id], content.strip())
+        if _has_incomplete_title(title):
+            LOGGER.warning(
+                "Discarding AI decision with incomplete title: source_ref=%s",
+                source_ref,
+            )
+            continue
+        missing_title_numbers = _title_numbers_missing_from_content(title, content)
+        if missing_title_numbers:
+            values = ", ".join(sorted(missing_title_numbers))
+            LOGGER.warning(
+                "Discarding AI decision with title numbers missing from content: "
+                "source_ref=%s values=%s",
+                source_ref,
+                values,
+            )
+            continue
         if not _contains_korean(title) or not _contains_korean(content):
             LOGGER.warning(
                 "Discarding AI decision that is not Korean: source_ref=%s",
