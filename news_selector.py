@@ -986,6 +986,12 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
     if "goldman sachs" in source_text:
         value = value.replace("골드만 사스", "골드만삭스")
         value = value.replace("골드만 사츠", "골드만삭스")
+    if "chevron" in source_text:
+        value = value.replace("체비론", "셰브론")
+    if "lpg" in source_text or "liquefied petroleum gas" in source_text:
+        value = re.sub(r"액화석유가(?!스)", "액화석유가스", value)
+    if "strait of hormuz" in source_text:
+        value = value.replace("만유원지", "호르무즈 해협")
     if "anglo american" in source_text:
         value = value.replace("앙골라 아메리칸", "앵글로 아메리칸")
         value = value.replace("앵글로우 아메리칸", "앵글로 아메리칸")
@@ -1414,9 +1420,87 @@ INCOMPLETE_TITLE_ENDINGS = (
 )
 
 
-def _has_incomplete_title(title: str) -> bool:
+def _has_unbalanced_title_delimiters(title: str) -> bool:
+    pairs = (("(", ")"), ("[", "]"), ("{", "}"), ("“", "”"), ("‘", "’"))
+    return any(title.count(opening) != title.count(closing) for opening, closing in pairs)
+
+
+def _has_truncated_numeric_prefix(title: str, content: str) -> bool:
+    title_number = re.search(r"(?<![\d.])(\d[\d,.]*)$", title)
+    if title_number is None:
+        return False
+    prefix = title_number.group(1).replace(",", "")
+    for match in re.finditer(r"(?<![\d.])(\d[\d,.]*)([조억만천백십])", content):
+        if match.group(1).replace(",", "") == prefix:
+            return True
+    return False
+
+
+def _has_incomplete_title(title: str, content: str) -> bool:
     normalized = title.strip().rstrip(".!?…")
-    return any(normalized.endswith(ending) for ending in INCOMPLETE_TITLE_ENDINGS)
+    if any(normalized.endswith(ending) for ending in INCOMPLETE_TITLE_ENDINGS):
+        return True
+    if _has_unbalanced_title_delimiters(normalized):
+        return True
+    if re.search(r"(?:을위|를위)$", normalized):
+        return True
+    if re.search(r"관련자\s+[가-힣]$", normalized):
+        return True
+    if re.search(
+        r"\d(?:[\d,.]*%?)\s*(?:로|에|에서|까지|부터|보다)$",
+        normalized,
+    ):
+        return True
+    return _has_truncated_numeric_prefix(normalized, content)
+
+
+DIRECTION_MARKER_PAIRS = (
+    (
+        ("상승", "올랐", "증가", "급증", "확대", "상향"),
+        ("하락", "내렸", "감소", "급감", "축소", "하향"),
+    ),
+    (("승인", "허가", "통과"), ("거절", "불허", "기각")),
+    (("흑자",), ("적자", "순손실")),
+)
+
+
+def _has_opposite_title_content_direction(title: str, content: str) -> bool:
+    for positive_markers, negative_markers in DIRECTION_MARKER_PAIRS:
+        title_positive = any(marker in title for marker in positive_markers)
+        title_negative = any(marker in title for marker in negative_markers)
+        content_positive = any(marker in content for marker in positive_markers)
+        content_negative = any(marker in content for marker in negative_markers)
+        if (
+            title_positive
+            and not title_negative
+            and not content_positive
+            and content_negative
+        ):
+            return True
+        if (
+            title_negative
+            and not title_positive
+            and not content_negative
+            and content_positive
+        ):
+            return True
+    return False
+
+
+def _has_malformed_korean_amount(text: str) -> bool:
+    large_unit_order = {"조": 3, "억": 2, "만": 1}
+    amount_pattern = re.compile(
+        r"\d+(?:[,\d.]|\s|[조억만천백십])*(?:조|억|만|천|백|십)"
+    )
+    for match in amount_pattern.finditer(text):
+        amount = match.group(0)
+        units = [character for character in amount if character in large_unit_order]
+        if len(units) != len(set(units)):
+            return True
+        orders = [large_unit_order[unit] for unit in units]
+        if any(current <= following for current, following in zip(orders, orders[1:])):
+            return True
+    return False
 
 
 def _title_numbers_missing_from_content(title: str, content: str) -> set[str]:
@@ -2051,9 +2135,23 @@ def select_and_summarize(
             continue
         title = _normalize_known_korean_terms(articles[temp_id], title.strip())
         content = _normalize_known_korean_terms(articles[temp_id], content.strip())
-        if _has_incomplete_title(title):
+        if _has_incomplete_title(title, content):
             LOGGER.warning(
                 "Discarding AI decision with incomplete title: source_ref=%s",
+                source_ref,
+            )
+            continue
+        if _has_opposite_title_content_direction(title, content):
+            LOGGER.warning(
+                "Discarding AI decision with opposing title/content direction: "
+                "source_ref=%s",
+                source_ref,
+            )
+            continue
+        if _has_malformed_korean_amount(f"{title} {content}"):
+            LOGGER.warning(
+                "Discarding AI decision with malformed Korean amount: "
+                "source_ref=%s",
                 source_ref,
             )
             continue

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 import unittest
 
 from news_selector import (
@@ -2219,6 +2220,258 @@ class NewsSelectorTests(unittest.TestCase):
                 "category": "corporate",
                 "news_type": "official_announcement",
                 "selection_reason": "에너지 자산 운용 계획이 변경됐습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_rejects_structurally_truncated_titles_without_blocking_valid_numbers(self):
+        cases = (
+            (
+                "ai-adoption-truncated",
+                "Company signs agreement to introduce AI",
+                "The company signed a binding agreement to introduce AI.",
+                "기업, AI 도입을위",
+                "기업이 AI 도입을 위한 구속력 있는 계약을 체결했습니다.",
+            ),
+            (
+                "prince-group-truncated",
+                "US names Prince Group associates in enforcement action",
+                "The US government named associates tied to Prince Group.",
+                "미국, 프린스 그룹 관련자 제",
+                "미국 정부가 프린스 그룹 관련자들을 제재했습니다.",
+            ),
+            (
+                "tax-burden-truncated",
+                "Tax reform reduces household burden by 1 trillion won",
+                "The reform reduces the household tax burden by 1 trillion won.",
+                "세제개편으로 가계 세부담 1",
+                "세제개편으로 가계 세부담이 1조원 감소합니다.",
+            ),
+            (
+                "apartment-price-truncated",
+                "Apartment price growth slows to 0.09%",
+                "Apartment price growth slowed to 0.09% this week.",
+                "아파트값 상승폭 0.09%로",
+                "아파트값 상승폭이 0.09%로 둔화했습니다.",
+            ),
+        )
+
+        for article_id, raw_title, description, title, content in cases:
+            with self.subTest(article_id=article_id):
+                source = article(
+                    article_id,
+                    raw_title,
+                    description,
+                    f"https://example.com/{article_id}",
+                )
+                response = json.dumps(
+                    [
+                        {
+                            "temp_id": 0,
+                            "source_ref": article_id,
+                            "source_title": raw_title,
+                            "title": title,
+                            "content": content,
+                            "importance_score": 7,
+                            "category": "corporate",
+                            "news_type": "official_announcement",
+                            "selection_reason": "새로운 경제 사실이 발표됐습니다.",
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+
+                selected = select_and_summarize([source], FakeGenerator(response))
+
+                self.assertEqual(selected, [])
+
+    def test_keeps_complete_titles_that_end_with_meaningful_numbers(self):
+        sources = [
+            article(
+                "sp500-record",
+                "S&P 500 reaches a new record",
+                "The S&P 500 reached a new record.",
+                "https://example.com/sp500-record",
+            ),
+            article(
+                "seven-models",
+                "Automaker launches 7 new models",
+                "The company launched 7 new vehicle models.",
+                "https://example.com/seven-models",
+            ),
+        ]
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "sp500-record",
+                "source_title": "S&P 500 reaches a new record",
+                "title": "S&P 500 사상 최고",
+                "content": "S&P 500 지수가 사상 최고치를 기록했습니다.",
+                "importance_score": 8,
+                "category": "market",
+                "news_type": "new_development",
+                "selection_reason": "미국 대표 지수가 사상 최고치를 기록했습니다."
+            },
+            {
+                "temp_id": 1,
+                "source_ref": "seven-models",
+                "source_title": "Automaker launches 7 new models",
+                "title": "자동차업체, 신차 7종 출시",
+                "content": "자동차업체가 새로운 차량 7종을 출시했습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "자동차업체가 신차 7종을 출시했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize(sources, FakeGenerator(response))
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["sp500-record", "seven-models"],
+        )
+
+    def test_rejects_opposite_title_and_summary_direction(self):
+        source = article(
+            "opposite-market-direction",
+            "US stocks rise after employment report",
+            "The major US indexes rose after the report.",
+            "https://example.com/opposite-market-direction",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "opposite-market-direction",
+                "source_title": "US stocks rise after employment report",
+                "title": "미국 증시, 고용지표 발표 후 하락",
+                "content": "미국 주요 지수가 고용지표 발표 후 상승했습니다.",
+                "importance_score": 8,
+                "category": "market",
+                "news_type": "new_development",
+                "selection_reason": "고용지표 발표 후 미국 증시가 움직였습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_keeps_mixed_metric_summary_when_title_direction_is_supported(self):
+        source = article(
+            "mixed-earnings-direction",
+            "Company revenue rises while profit falls",
+            "Quarterly revenue increased, but net profit decreased.",
+            "https://example.com/mixed-earnings-direction",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "mixed-earnings-direction",
+                "source_title": "Company revenue rises while profit falls",
+                "title": "기업 매출 증가, 순이익은 감소",
+                "content": "기업의 분기 매출은 증가했지만 순이익은 감소했습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "기업이 상반된 방향의 분기 실적을 발표했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["mixed-earnings-direction"],
+        )
+
+    def test_normalizes_source_supported_company_and_energy_terms(self):
+        sources = [
+            article(
+                "chevron-dividend",
+                "Chevron expands its dividend",
+                "Chevron announced a larger shareholder dividend.",
+                "https://example.com/chevron-dividend",
+            ),
+            article(
+                "india-lpg",
+                "US expands liquefied petroleum gas LPG shipments to India",
+                "US LPG shipments to India expanded.",
+                "https://example.com/india-lpg",
+            ),
+            article(
+                "hormuz-shipping",
+                "Strait of Hormuz disruption delays oil cargoes",
+                "The disruption delayed oil cargoes through the Strait of Hormuz.",
+                "https://example.com/hormuz-shipping",
+            ),
+        ]
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "chevron-dividend",
+                "source_title": "Chevron expands its dividend",
+                "title": "체비론, 배당 확대",
+                "content": "체비론이 주주 배당을 확대한다고 발표했습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "기업이 배당 확대를 발표했습니다."
+            },
+            {
+                "temp_id": 1,
+                "source_ref": "india-lpg",
+                "source_title": "US expands liquefied petroleum gas LPG shipments to India",
+                "title": "미국, 인도 액화석유가 공급 확대",
+                "content": "미국이 인도에 대한 액화석유가(LPG) 공급을 확대했습니다.",
+                "importance_score": 7,
+                "category": "market",
+                "news_type": "new_development",
+                "selection_reason": "미국의 인도 에너지 공급이 확대됐습니다."
+            },
+            {
+                "temp_id": 2,
+                "source_ref": "hormuz-shipping",
+                "source_title": "Strait of Hormuz disruption delays oil cargoes",
+                "title": "만유원지 차질로 원유 운송 지연",
+                "content": "만유원지 운송 차질로 원유 화물 운송이 지연됐습니다.",
+                "importance_score": 8,
+                "category": "geopolitics",
+                "news_type": "new_development",
+                "selection_reason": "주요 원유 운송 경로에 차질이 발생했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize(sources, FakeGenerator(response))
+
+        self.assertEqual(selected[0]["normalized_title"], "셰브론, 배당 확대")
+        self.assertIn("액화석유가스(LPG)", selected[1]["normalized_content"])
+        self.assertEqual(
+            selected[2]["normalized_title"],
+            "호르무즈 해협 차질로 원유 운송 지연",
+        )
+
+    def test_rejects_repeated_korean_large_number_unit(self):
+        source = article(
+            "uob-profit",
+            "UOB reports quarter 2 profit components of 1, 4 and 8 million Singapore dollars",
+            "The bank disclosed quarter 2 profit components of 1, 4 and 8 million Singapore dollars.",
+            "https://example.com/uob-profit",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "uob-profit",
+                "source_title": "UOB reports quarter 2 profit components of 1, 4 and 8 million Singapore dollars",
+                "title": "UOB, 2분기 순이익 증가",
+                "content": "UOB의 2분기 순이익이 1억4천만8백만 싱가포르달러로 증가했습니다.",
+                "importance_score": 7,
+                "category": "corporate",
+                "news_type": "official_announcement",
+                "selection_reason": "은행이 분기 순이익 증가를 발표했습니다."
             }
         ]"""
 
