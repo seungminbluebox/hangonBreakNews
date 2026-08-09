@@ -12,6 +12,7 @@ from gnews_tracker import (
     run_cycle,
     to_breaking_news_row,
 )
+from news_selector import SelectionResult
 
 
 def article(article_id="article-1", url="https://example.com/article-1"):
@@ -265,6 +266,167 @@ class GNewsCycleTests(unittest.TestCase):
         selector.assert_called_once()
         self.assertIn(source["original_url"], state.evaluated_urls)
         self.assertEqual(state.pending, {})
+
+    def test_keeps_quality_failure_pending_without_marking_it_evaluated(self):
+        source = article()
+        state = TrackerState()
+
+        stats = run_cycle(
+            object(),
+            Mock(),
+            FakeRepository(),
+            Mock(),
+            state,
+            collector=Mock(return_value=[source]),
+            selector=Mock(
+                return_value=SelectionResult(
+                    [],
+                    retryable_urls={source["original_url"]},
+                )
+            ),
+            clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+            sleeper=Mock(),
+            output=Mock(),
+        )
+
+        self.assertIn(source["original_url"], state.pending)
+        self.assertNotIn(source["original_url"], state.evaluated_urls)
+        self.assertEqual(state.quality_retry_counts[source["original_url"]], 1)
+        self.assertEqual(stats["quality_retries"], 1)
+
+    def test_processes_fresh_articles_before_carried_quality_retries(self):
+        retry_source = article("retry", "https://example.com/retry")
+        fresh_source = article("fresh", "https://example.com/fresh")
+        state = TrackerState(
+            pending={retry_source["original_url"]: retry_source},
+            quality_retry_counts={retry_source["original_url"]: 1},
+        )
+        calls = []
+
+        def select_batch(batch, generator, *, recent_news):
+            calls.append([item["provider_article_id"] for item in batch])
+            return SelectionResult(
+                [],
+                retryable_urls={item["original_url"] for item in batch},
+            )
+
+        run_cycle(
+            object(),
+            Mock(),
+            FakeRepository(),
+            Mock(),
+            state,
+            collector=Mock(return_value=[fresh_source]),
+            selector=select_batch,
+            clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+            sleeper=Mock(),
+            output=Mock(),
+            batch_size=1,
+        )
+
+        self.assertEqual(calls, [["fresh"], ["retry"]])
+
+    def test_exhausts_quality_retry_after_third_unresolved_attempt(self):
+        source = article()
+        state = TrackerState()
+        collector = Mock(side_effect=[[source], [], []])
+        selector = Mock(
+            return_value=SelectionResult(
+                [],
+                retryable_urls={source["original_url"]},
+            )
+        )
+        stats = None
+
+        for attempt in range(3):
+            stats = run_cycle(
+                object(),
+                Mock(),
+                FakeRepository(),
+                Mock(),
+                state,
+                collector=collector,
+                selector=selector,
+                clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+                sleeper=Mock(),
+                output=Mock(),
+            )
+            if attempt < 2:
+                self.assertIn(source["original_url"], state.pending)
+                self.assertEqual(
+                    state.quality_retry_counts[source["original_url"]],
+                    attempt + 1,
+                )
+
+        self.assertNotIn(source["original_url"], state.pending)
+        self.assertIn(source["original_url"], state.evaluated_urls)
+        self.assertNotIn(source["original_url"], state.quality_retry_counts)
+        self.assertEqual(stats["quality_retry_exhausted"], 1)
+
+    def test_limits_carried_quality_retries_to_ten_per_cycle(self):
+        sources = [
+            article(f"retry-{index}", f"https://example.com/retry-{index}")
+            for index in range(12)
+        ]
+        state = TrackerState(
+            pending={item["original_url"]: item for item in sources},
+            quality_retry_counts={item["original_url"]: 1 for item in sources},
+        )
+        processed_urls = []
+
+        def select_batch(batch, generator, *, recent_news):
+            processed_urls.extend(item["original_url"] for item in batch)
+            return SelectionResult(
+                [],
+                retryable_urls={item["original_url"] for item in batch},
+            )
+
+        run_cycle(
+            object(),
+            Mock(),
+            FakeRepository(),
+            Mock(),
+            state,
+            collector=Mock(return_value=[]),
+            selector=select_batch,
+            clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+            sleeper=Mock(),
+            output=Mock(),
+            batch_size=20,
+        )
+
+        self.assertEqual(processed_urls, [item["original_url"] for item in sources[:10]])
+        self.assertEqual(
+            state.quality_retry_counts[sources[10]["original_url"]],
+            1,
+        )
+        self.assertEqual(
+            state.quality_retry_counts[sources[11]["original_url"]],
+            1,
+        )
+
+    def test_clears_quality_retry_counter_after_successful_save(self):
+        source = article()
+        state = TrackerState(
+            pending={source["original_url"]: source},
+            quality_retry_counts={source["original_url"]: 1},
+        )
+
+        run_cycle(
+            object(),
+            Mock(),
+            FakeRepository(),
+            Mock(),
+            state,
+            collector=Mock(return_value=[]),
+            selector=Mock(return_value=[selected(source)]),
+            clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+            sleeper=Mock(),
+            output=Mock(),
+        )
+
+        self.assertNotIn(source["original_url"], state.quality_retry_counts)
+        self.assertIn(source["original_url"], state.evaluated_urls)
 
     def test_keeps_selected_article_pending_until_database_insert_succeeds(self):
         source = article()

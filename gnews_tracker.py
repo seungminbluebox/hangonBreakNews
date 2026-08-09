@@ -25,6 +25,8 @@ DEFAULT_DAILY_REQUEST_LIMIT = 950
 DEFAULT_AI_BATCH_SIZE = 10
 RECENT_DUPLICATE_WINDOW_HOURS = 24
 RECENT_DUPLICATE_LIMIT = 300
+MAX_QUALITY_RETRIES = 3
+MAX_CARRIED_QUALITY_RETRIES_PER_CYCLE = 10
 
 
 @dataclass
@@ -38,9 +40,11 @@ class TrackerState:
 
     pending: dict[str, dict] = field(default_factory=dict)
     evaluated_urls: dict[str, None] = field(default_factory=dict)
+    quality_retry_counts: dict[str, int] = field(default_factory=dict)
     evaluated_limit: int = 5000
 
     def remember_evaluated(self, url: str) -> None:
+        self.quality_retry_counts.pop(url, None)
         self.evaluated_urls.pop(url, None)
         self.evaluated_urls[url] = None
         while len(self.evaluated_urls) > self.evaluated_limit:
@@ -194,6 +198,8 @@ def run_cycle(
         "saved": 0,
         "duplicates": 0,
         "rejected": 0,
+        "quality_retries": 0,
+        "quality_retry_exhausted": 0,
         "ai_failures": 0,
         "db_failures": 0,
     }
@@ -240,8 +246,21 @@ def run_cycle(
         stats["db_failures"] += 1
         output(f"Recent-news duplicate context unavailable; continuing: {error}")
 
-    pending_articles = list(state.pending.values())
-    for batch in _chunks(pending_articles, batch_size):
+    fresh_articles = [
+        item
+        for url, item in state.pending.items()
+        if url not in state.quality_retry_counts
+    ]
+    carried_retries = [
+        item
+        for url, item in state.pending.items()
+        if url in state.quality_retry_counts
+    ][:MAX_CARRIED_QUALITY_RETRIES_PER_CYCLE]
+    processing_batches = [
+        *_chunks(fresh_articles, batch_size),
+        *_chunks(carried_retries, batch_size),
+    ]
+    for batch in processing_batches:
         try:
             selected_articles = selector(
                 batch,
@@ -253,6 +272,11 @@ def run_cycle(
             output(f"AI selection failed; {len(batch)} article(s) retained: {error}")
             continue
 
+        retryable_urls = {
+            url
+            for url in getattr(selected_articles, "retryable_urls", frozenset())
+            if url in state.pending
+        }
         selected_by_url = {
             item["original_url"]: item
             for item in selected_articles
@@ -263,6 +287,16 @@ def run_cycle(
         for source in batch:
             url = source["original_url"]
             if url in selected_by_url:
+                continue
+            if url in retryable_urls:
+                retry_count = state.quality_retry_counts.get(url, 0) + 1
+                stats["quality_retries"] += 1
+                if retry_count >= MAX_QUALITY_RETRIES:
+                    state.pending.pop(url, None)
+                    state.remember_evaluated(url)
+                    stats["quality_retry_exhausted"] += 1
+                else:
+                    state.quality_retry_counts[url] = retry_count
                 continue
             state.pending.pop(url, None)
             state.remember_evaluated(url)
@@ -303,6 +337,8 @@ def run_cycle(
         "GNews cycle: "
         f"fetched={stats['fetched']} selected={stats['selected']} "
         f"saved={stats['saved']} rejected={stats['rejected']} "
+        f"quality_retries={stats['quality_retries']} "
+        f"quality_retry_exhausted={stats['quality_retry_exhausted']} "
         f"duplicates={stats['duplicates']} pending={stats['pending']}"
     )
     return stats
