@@ -1588,6 +1588,169 @@ class NewsSelectorTests(unittest.TestCase):
             ["corporate-financing-report"],
         )
 
+    def test_deduplicates_labor_release_across_employment_unemployment_and_jobs_angles(self):
+        sources = [
+            article(
+                "employment-angle",
+                "US month 7 employment report puts unemployment at 4.2%",
+                "The official month 7 employment report put unemployment at 4.2%.",
+                "https://example.com/employment-angle",
+            ),
+            article(
+                "unemployment-angle",
+                "US month 7 unemployment rate is 4.2%",
+                "The official month 7 unemployment rate was 4.2%.",
+                "https://example.com/unemployment-angle",
+            ),
+            article(
+                "jobs-angle-complete",
+                "US month 7 jobs report includes a 4.2% jobless rate",
+                "The Labor Department month 7 jobs report included a 4.2% jobless rate and broader labor details.",
+                "https://example.com/jobs-angle-complete",
+            ),
+        ]
+        sources[2]["raw_content"] = (
+            "The complete Labor Department release included the month 7 jobs "
+            "figures, the 4.2% jobless rate, and supporting labor-market details."
+        )
+        decisions = [
+            {
+                "temp_id": 0,
+                "source_ref": "employment-angle",
+                "source_title": sources[0]["raw_title"],
+                "title": "미국 7월 고용지표 발표",
+                "content": "미국 7월 고용지표에서 실업률이 4.2%로 발표됐습니다.",
+                "importance_score": 8,
+                "category": "indicator",
+                "news_type": "official_announcement",
+                "selection_reason": "미국의 월간 고용지표가 발표됐습니다.",
+            },
+            {
+                "temp_id": 1,
+                "source_ref": "unemployment-angle",
+                "source_title": sources[1]["raw_title"],
+                "title": "미국 7월 실업률 4.2%",
+                "content": "미국 7월 실업률이 4.2%로 발표됐습니다.",
+                "importance_score": 8,
+                "category": "indicator",
+                "news_type": "official_announcement",
+                "selection_reason": "미국의 월간 실업률이 발표됐습니다.",
+            },
+            {
+                "temp_id": 2,
+                "source_ref": "jobs-angle-complete",
+                "source_title": sources[2]["raw_title"],
+                "title": "미국 7월 일자리 보고서 발표",
+                "content": "미 노동부가 7월 일자리 보고서에서 구직자 비율을 4.2%로 발표했습니다.",
+                "importance_score": 8,
+                "category": "indicator",
+                "news_type": "official_announcement",
+                "selection_reason": "미국의 월간 일자리 보고서가 발표됐습니다.",
+            },
+        ]
+
+        selected = select_and_summarize(
+            sources,
+            FakeGenerator(json.dumps(decisions, ensure_ascii=False)),
+        )
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["jobs-angle-complete"],
+        )
+
+    def test_keeps_labor_stories_when_country_month_or_key_number_differs(self):
+        cases = (
+            (
+                ("미국", "US", 7, "4.2"),
+                ("캐나다", "Canada", 7, "4.2"),
+            ),
+            (
+                ("미국", "US", 7, "4.2"),
+                ("미국", "US", 8, "4.2"),
+            ),
+            (
+                ("미국", "US", 7, "4.2"),
+                ("미국", "US", 7, "4.3"),
+            ),
+        )
+
+        for case_index, pair in enumerate(cases):
+            with self.subTest(case_index=case_index):
+                sources = []
+                decisions = []
+                for index, (country_ko, country_en, month, value) in enumerate(pair):
+                    article_id = f"labor-{case_index}-{index}"
+                    raw_title = (
+                        f"{country_en} month {month} unemployment rate is {value}%"
+                    )
+                    sources.append(
+                        article(
+                            article_id,
+                            raw_title,
+                            f"The official month {month} unemployment rate was {value}%.",
+                            f"https://example.com/{article_id}",
+                        )
+                    )
+                    decisions.append(
+                        {
+                            "temp_id": index,
+                            "source_ref": article_id,
+                            "source_title": raw_title,
+                            "title": f"{country_ko} {month}월 실업률 {value}%",
+                            "content": (
+                                f"{country_ko} {month}월 실업률이 {value}%로 발표됐습니다."
+                            ),
+                            "importance_score": 8,
+                            "category": "indicator",
+                            "news_type": "official_announcement",
+                            "selection_reason": f"{country_ko}의 월간 실업률이 발표됐습니다.",
+                        }
+                    )
+
+                selected = select_and_summarize(
+                    sources,
+                    FakeGenerator(json.dumps(decisions, ensure_ascii=False)),
+                )
+
+                self.assertEqual(len(selected), 2)
+
+    def test_keeps_revised_official_labor_figure_as_material_follow_up(self):
+        source = article(
+            "revised-labor-rate",
+            "US month 7 unemployment rate revised to 4.1%",
+            "The official month 7 unemployment rate was revised to 4.1%.",
+            "https://example.com/revised-labor-rate",
+        )
+        decision = {
+            "temp_id": 0,
+            "source_ref": "revised-labor-rate",
+            "source_title": source["raw_title"],
+            "title": "미국 7월 실업률 4.1%로 수정",
+            "content": "미국 7월 실업률이 기존 4.2%에서 4.1%로 수정됐습니다.",
+            "importance_score": 8,
+            "category": "indicator",
+            "news_type": "follow_up",
+            "selection_reason": "미국의 공식 실업률 수치가 수정됐습니다.",
+        }
+        source["raw_description"] += " The previous estimate was 4.2%."
+
+        selected = select_and_summarize(
+            [source],
+            FakeGenerator(json.dumps([decision], ensure_ascii=False)),
+            recent_news=[
+                {
+                    "title": "미국 7월 실업률 4.2%",
+                    "content": "미국 7월 실업률이 4.2%로 발표됐습니다.",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["revised-labor-rate"],
+        )
+
     def test_keeps_distinct_indicators_with_the_same_country_month_and_value(self):
         inflation = article(
             "us-inflation",

@@ -183,6 +183,17 @@ EVENT_TOKEN_SYNONYMS = (
     ("매도세", "하락"),
     ("약세", "하락"),
 )
+EVENT_CONCEPT_PATTERNS = {
+    "labor_release": (
+        r"고용\s*지표",
+        r"실업률",
+        r"일자리\s*(?:보고서|지표)?",
+        r"\bemployment\b",
+        r"\bunemployment\b",
+        r"\bjobs?\s+report\b",
+        r"\bjobless\s+rate\b",
+    ),
+}
 EVENT_GENERIC_TOKENS = {
     "상반기",
     "하반기",
@@ -1570,10 +1581,19 @@ def _similarity_text(value: str) -> str:
 
 
 def _is_same_event(first: dict, second: dict) -> bool:
-    first_title = _similarity_text(first["normalized_title"])
-    second_title = _similarity_text(second["normalized_title"])
-    first_content = _similarity_text(first["normalized_content"])
-    second_content = _similarity_text(second["normalized_content"])
+    first_raw_title = first["normalized_title"]
+    second_raw_title = second["normalized_title"]
+    first_raw_content = first["normalized_content"]
+    second_raw_content = second["normalized_content"]
+    if _has_explicit_event_dimension_conflict(
+        f"{first_raw_title} {first_raw_content}",
+        f"{second_raw_title} {second_raw_content}",
+    ):
+        return False
+    first_title = _similarity_text(first_raw_title)
+    second_title = _similarity_text(second_raw_title)
+    first_content = _similarity_text(first_raw_content)
+    second_content = _similarity_text(second_raw_content)
     comparisons = (
         (first_title, second_title),
         (first_content, second_content),
@@ -1601,6 +1621,86 @@ def _event_tokens(value: str) -> set[str]:
         for token in re.findall(r"[0-9a-z가-힣]+", normalized)
         if len(token) >= 2
     }
+
+
+def _event_concept_tokens(value: str) -> set[str]:
+    normalized = value.casefold()
+    return {
+        concept
+        for concept, patterns in EVENT_CONCEPT_PATTERNS.items()
+        if any(re.search(pattern, normalized) for pattern in patterns)
+    }
+
+
+def _event_geography_tokens(value: str) -> set[str]:
+    normalized = value.casefold()
+    geographies = set()
+    for _, korean_markers in SOURCE_GEOGRAPHY_PATTERNS:
+        if any(
+            re.search(
+                rf"(?<![0-9a-z가-힣]){re.escape(marker.casefold())}"
+                rf"(?![0-9a-z가-힣])",
+                normalized,
+            )
+            for marker in korean_markers
+        ):
+            geographies.add(korean_markers[0])
+    return geographies
+
+
+def _event_period_tokens(value: str) -> set[str]:
+    periods = set()
+    for year, month in re.findall(
+        r"(?:(20\d{2})년\s*)?(\d{1,2})월",
+        value,
+    ):
+        periods.add(f"{year or '*'}-month-{int(month)}")
+    for year, quarter in re.findall(
+        r"(?:(20\d{2})년\s*)?(\d)분기",
+        value,
+    ):
+        periods.add(f"{year or '*'}-quarter-{int(quarter)}")
+    return periods
+
+
+def _event_key_metric_tokens(value: str) -> set[str]:
+    metrics = _event_numeric_tokens(value)
+    period_numbers = {
+        _normalize_number(number)
+        for number in re.findall(r"(?<!\d)(\d{1,2})(?=월|분기)", value)
+    }
+    return metrics - period_numbers
+
+
+def _has_explicit_event_dimension_conflict(
+    first_text: str,
+    second_text: str,
+) -> bool:
+    shared_concepts = _event_concept_tokens(first_text) & _event_concept_tokens(
+        second_text
+    )
+    if "labor_release" not in shared_concepts:
+        return False
+
+    first_geographies = _event_geography_tokens(first_text)
+    second_geographies = _event_geography_tokens(second_text)
+    if (
+        first_geographies
+        and second_geographies
+        and first_geographies.isdisjoint(second_geographies)
+    ):
+        return True
+
+    first_periods = _event_period_tokens(first_text)
+    second_periods = _event_period_tokens(second_text)
+    if first_periods and second_periods and first_periods.isdisjoint(second_periods):
+        return True
+
+    first_metrics = _event_key_metric_tokens(first_text)
+    second_metrics = _event_key_metric_tokens(second_text)
+    if first_metrics and second_metrics and first_metrics.isdisjoint(second_metrics):
+        return True
+    return False
 
 
 def _event_numeric_tokens(value: str) -> set[str]:
@@ -1705,13 +1805,53 @@ def _has_same_industrial_ai_policy_signature(
     return len((first_tokens & second_tokens) & industry_tokens) >= 2
 
 
+def _has_same_labor_release_signature(
+    first_title: str,
+    first_content: str,
+    second_title: str,
+    second_content: str,
+) -> bool:
+    first_text = f"{first_title} {first_content}"
+    second_text = f"{second_title} {second_content}"
+    if not all(
+        "labor_release" in _event_concept_tokens(text)
+        for text in (first_text, second_text)
+    ):
+        return False
+
+    first_geographies = _event_geography_tokens(first_text)
+    second_geographies = _event_geography_tokens(second_text)
+    if not first_geographies.intersection(second_geographies):
+        return False
+
+    first_periods = _event_period_tokens(first_text)
+    second_periods = _event_period_tokens(second_text)
+    if not first_periods.intersection(second_periods):
+        return False
+
+    first_metrics = _event_key_metric_tokens(first_text)
+    second_metrics = _event_key_metric_tokens(second_text)
+    return bool(first_metrics.intersection(second_metrics))
+
+
 def _has_shared_event_signature(
     first_title: str,
     first_content: str,
     second_title: str,
     second_content: str,
 ) -> bool:
-    if _has_same_company_reporting_signature(
+    if _has_explicit_event_dimension_conflict(
+        f"{first_title} {first_content}",
+        f"{second_title} {second_content}",
+    ):
+        return False
+
+    if _has_same_labor_release_signature(
+        first_title,
+        first_content,
+        second_title,
+        second_content,
+    ) or _has_same_company_reporting_signature(
         first_title,
         first_content,
         second_title,
@@ -1764,6 +1904,13 @@ def _has_shared_event_signature(
 def _is_same_recent_event(article: dict, recent_item: dict) -> bool:
     current_title = article.get("normalized_title") or ""
     recent_title = recent_item.get("title") or ""
+    current_content = article.get("normalized_content") or ""
+    recent_content = recent_item.get("content") or ""
+    if _has_explicit_event_dimension_conflict(
+        f"{current_title} {current_content}",
+        f"{recent_title} {recent_content}",
+    ):
+        return False
     current_tokens = _event_tokens(current_title)
     recent_tokens = _event_tokens(recent_title)
     shared_tokens = current_tokens & recent_tokens
@@ -1777,9 +1924,9 @@ def _is_same_recent_event(article: dict, recent_item: dict) -> bool:
 
     if _has_shared_event_signature(
         current_title,
-        article.get("normalized_content") or "",
+        current_content,
         recent_title,
-        recent_item.get("content") or "",
+        recent_content,
     ):
         return True
 
@@ -1807,7 +1954,12 @@ def _has_material_follow_up(article: dict, recent_item: dict) -> bool:
             recent_item.get("content") or "",
         )
     )
-    same_angle_event = _has_same_company_reporting_signature(
+    same_angle_event = _has_same_labor_release_signature(
+        article.get("normalized_title") or "",
+        article.get("normalized_content") or "",
+        recent_item.get("title") or "",
+        recent_item.get("content") or "",
+    ) or _has_same_company_reporting_signature(
         article.get("normalized_title") or "",
         article.get("normalized_content") or "",
         recent_item.get("title") or "",
@@ -1825,7 +1977,14 @@ def _has_material_follow_up(article: dict, recent_item: dict) -> bool:
     )
     if same_angle_event and not any(
         marker in current_text
-        for marker in ("정정", "재공시", "거래 중단", "서킷브레이커")
+        for marker in (
+            "정정",
+            "수정",
+            "개정",
+            "재공시",
+            "거래 중단",
+            "서킷브레이커",
+        )
     ):
         return False
     if any(
