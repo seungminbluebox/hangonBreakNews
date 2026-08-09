@@ -2076,6 +2076,60 @@ class NewsSelectorTests(unittest.TestCase):
             },
         )
 
+    def test_caps_broad_trend_without_action_but_keeps_emergency_governance_event(self):
+        trend = article(
+            "china-ai-constraint",
+            "China AI development constrained by data shortage",
+            "New industry data shows a broad shortage is constraining AI development in China.",
+            "https://example.com/china-ai-constraint",
+        )
+        emergency_action = article(
+            "central-bank-governor-removed",
+            "Government removes central bank governor after emergency meeting",
+            "The government removed the central bank governor with immediate effect after an emergency meeting.",
+            "https://example.com/central-bank-governor-removed",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "china-ai-constraint",
+                "source_title": "China AI development constrained by data shortage",
+                "title": "중국 AI 개발, 데이터 부족으로 제약",
+                "content": "중국 AI 산업의 개발이 광범위한 데이터 부족으로 제약받고 있습니다.",
+                "importance_score": 9,
+                "category": "corporate",
+                "news_type": "new_development",
+                "selection_reason": "중국 AI 산업의 데이터 부족 현황이 새로 보도됐습니다."
+            },
+            {
+                "temp_id": 1,
+                "source_ref": "central-bank-governor-removed",
+                "source_title": "Government removes central bank governor after emergency meeting",
+                "title": "정부, 중앙은행 총재 즉시 해임",
+                "content": "정부가 긴급회의 후 중앙은행 총재를 즉시 해임했습니다.",
+                "importance_score": 9,
+                "category": "policy",
+                "news_type": "breaking",
+                "selection_reason": "통화정책 거버넌스에 즉각적인 변화가 발생했습니다."
+            }
+        ]"""
+
+        selected = select_and_summarize(
+            [trend, emergency_action],
+            FakeGenerator(response),
+        )
+
+        self.assertEqual(
+            {
+                item["provider_article_id"]: item["importance_score"]
+                for item in selected
+            },
+            {
+                "china-ai-constraint": 8,
+                "central-bank-governor-removed": 9,
+            },
+        )
+
     def test_caps_korean_routine_market_record_and_earnings(self):
         market_record = article(
             "korean-market-record",

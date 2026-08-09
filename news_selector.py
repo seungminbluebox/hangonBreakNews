@@ -1279,6 +1279,86 @@ def _normalize_importance_score(article: dict, importance_score):
         marker in source_text for marker in systemic_markers
     ) or bool(re.search(r"\bwar\b", source_text))
 
+    trend_only_framing = any(
+        marker in source_text
+        for marker in (
+            "development constrained by",
+            "growth constrained by",
+            "constrained by shortage",
+            "faces constraints",
+            "faces headwinds",
+            "broad trend",
+            "industry trend",
+            "market outlook",
+            "growth outlook",
+            "개발 제약",
+            "성장 제약",
+            "부족으로 제약",
+            "산업 동향",
+            "시장 전망",
+            "성장 전망",
+        )
+    )
+    concrete_action = any(
+        marker in source_text
+        for marker in (
+            "announces",
+            "announced",
+            "approves",
+            "approved",
+            "adopts",
+            "adopted",
+            "orders",
+            "ordered",
+            "signs",
+            "signed",
+            "bans",
+            "banned",
+            "imposes",
+            "imposed",
+            "removes",
+            "removed",
+            "cuts rate",
+            "raises rate",
+            "공식 발표",
+            "승인",
+            "채택",
+            "명령",
+            "서명",
+            "금지",
+            "부과",
+            "해임",
+            "금리 인하",
+            "금리 인상",
+        )
+    )
+    abrupt_market_move = any(
+        marker in source_text
+        for marker in (
+            "market plunged",
+            "markets plunged",
+            "stocks plunged",
+            "index plunged",
+            "yield surged",
+            "currency plunged",
+            "시장 급락",
+            "증시 급락",
+            "지수 급락",
+            "금리 급등",
+            "통화 급락",
+        )
+    ) and any(
+        float(value) >= 5
+        for value in re.findall(r"(\d+(?:\.\d+)?)%", source_text)
+    )
+    if (
+        trend_only_framing
+        and not has_systemic_marker
+        and not concrete_action
+        and not abrupt_market_move
+    ):
+        return 8
+
     routine_market_record = any(
         marker in source_text
         for marker in (
@@ -2163,6 +2243,7 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 10점은 세 기준을 모두 충족하며 세계 시장이나 금융시스템에 충격을 줄 수 있는 극히 드문 사건에만 사용하세요.
 - 8점은 주요 기업 실적·산업 변화·정책·규제처럼 영향이 크지만 광범위한 즉시 재평가까지 요구하지 않는 주요 경제 소식입니다.
 - 7점은 의미 있는 새 경제 사실이지만 영향 범위가 제한적인 소식입니다.
+- 산업 제약·부족·전망·동향을 다룬 폭넓은 분석은 주요 경제 소식으로 남길 수 있지만, 새로 확정된 조치나 즉각적인 시장 충격이 없으면 최대 8점입니다.
 - 일반적인 분기 실적, 단순 지수 최고치, 제품 공개, 결과 없는 회의에는 9~10점을 주지 마세요. 반대로 기업·정책·지정학 등 어떤 종류든 위 세 기준을 충족하면 속보로 평가하세요.
 - 규제안 심사·승인 보류처럼 최종 결정이 아닌 절차와 일반적인 기업 인수·지분 매각은 원칙적으로 최대 8점입니다.
 
