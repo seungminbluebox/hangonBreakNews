@@ -2479,6 +2479,74 @@ class NewsSelectorTests(unittest.TestCase):
 
         self.assertEqual(selected, [])
 
+    def test_marks_unrepaired_selected_quality_failure_retryable(self):
+        source = article(
+            "retry-title",
+            "Company signs agreement to introduce AI",
+            "The company signed a binding agreement to introduce AI.",
+            "https://example.com/retry-title",
+        )
+        broken_response = """[{
+            "temp_id": 0,
+            "source_ref": "retry-title",
+            "source_title": "Company signs agreement to introduce AI",
+            "title": "기업, AI 도입을위",
+            "content": "기업이 AI 도입을 위한 구속력 있는 계약을 체결했습니다.",
+            "importance_score": 7,
+            "category": "corporate",
+            "news_type": "official_announcement",
+            "selection_reason": "기업이 AI 도입 계약을 체결했습니다."
+        }]"""
+        generator = FakeGenerator([broken_response, broken_response])
+
+        result = select_and_summarize([source], generator)
+
+        self.assertEqual(result, [])
+        self.assertEqual(
+            result.retryable_urls,
+            frozenset({source["original_url"]}),
+        )
+        self.assertEqual(len(generator.prompts), 2)
+        self.assertIn("제목과 요약의 품질 오류만 수정", generator.prompts[1])
+
+    def test_selects_article_when_focused_quality_repair_succeeds(self):
+        source = article(
+            "repaired-title",
+            "Company signs agreement to introduce AI",
+            "The company signed a binding agreement to introduce AI.",
+            "https://example.com/repaired-title",
+        )
+        broken_response = """[{
+            "temp_id": 0,
+            "source_ref": "repaired-title",
+            "source_title": "Company signs agreement to introduce AI",
+            "title": "기업, AI 도입을위",
+            "content": "기업이 AI 도입을 위한 구속력 있는 계약을 체결했습니다.",
+            "importance_score": 7,
+            "category": "corporate",
+            "news_type": "official_announcement",
+            "selection_reason": "기업이 AI 도입 계약을 체결했습니다."
+        }]"""
+        repaired_response = """[{
+            "temp_id": 0,
+            "source_ref": "repaired-title",
+            "source_title": "Company signs agreement to introduce AI",
+            "title": "기업, AI 도입 계약 체결",
+            "content": "기업이 AI 도입을 위한 구속력 있는 계약을 체결했습니다.",
+            "importance_score": 7,
+            "category": "corporate",
+            "news_type": "official_announcement",
+            "selection_reason": "기업이 AI 도입 계약을 체결했습니다."
+        }]"""
+        generator = FakeGenerator([broken_response, repaired_response])
+
+        result = select_and_summarize([source], generator)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["normalized_title"], "기업, AI 도입 계약 체결")
+        self.assertEqual(result.retryable_urls, frozenset())
+        self.assertEqual(len(generator.prompts), 2)
+
     def test_rejects_title_number_missing_from_summary_body(self):
         source = article(
             "doordash-number-drift",

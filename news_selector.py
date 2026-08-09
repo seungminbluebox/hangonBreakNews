@@ -11,6 +11,20 @@ import re
 LOGGER = logging.getLogger(__name__)
 
 
+class SelectionResult(list):
+    """List-compatible selector output with per-article retry metadata."""
+
+    __slots__ = ("_retryable_urls",)
+
+    def __init__(self, items=(), *, retryable_urls=()):
+        super().__init__(items)
+        self._retryable_urls = frozenset(retryable_urls)
+
+    @property
+    def retryable_urls(self) -> frozenset[str]:
+        return self._retryable_urls
+
+
 SELECTABLE_NEWS_TYPES = {
     "breaking",
     "new_development",
@@ -2024,16 +2038,145 @@ JSON 리스트만 반환하세요. 선택할 기사가 없으면 []를 반환하
 """
 
 
+def _quality_repair_prompt(repair_candidates: list[dict]) -> str:
+    return f"""
+아래 기사는 경제 뉴스로 선택됐지만 생성된 제목 또는 요약이 품질 검사에 실패했습니다.
+기사 선택 자체를 다시 판단하지 말고 제목과 요약의 품질 오류만 수정하세요.
+원문 후보에 없는 사실·숫자·인과관계를 추가하지 마세요.
+각 항목의 temp_id, source_ref, source_title은 한 글자도 바꾸지 마세요.
+완전히 고칠 수 없는 항목은 결과에서 제외하세요.
+
+[수정 대상]
+{json.dumps(repair_candidates, ensure_ascii=False)}
+
+[출력]
+수정된 항목만 아래 형식의 순수한 JSON 배열로 반환하세요.
+{{
+  "temp_id": 원래 temp_id,
+  "source_ref": 원래 source_ref,
+  "source_title": 원래 source_title,
+  "title": 가급적 35자, 완결성을 위해 최대 55자 한국어 제목,
+  "content": 확인된 사실만 담은 한국어 110자 이내 1~2문장 요약,
+  "importance_score": 7~10 정수,
+  "category": "market" | "indicator" | "geopolitics" | "corporate" | "policy",
+  "news_type": "breaking" | "new_development" | "official_announcement" | "follow_up",
+  "selection_reason": 새로 발생·발표·결정·변경된 사실 한 문장
+}}
+"""
+
+
+def _decision_to_item(
+    decision: dict,
+    articles: list[dict],
+    seen_refs: set[str],
+) -> tuple[dict | None, str | None]:
+    if not isinstance(decision, dict):
+        return None, None
+
+    temp_id = decision.get("temp_id")
+    source_ref = decision.get("source_ref")
+    source_title = decision.get("source_title")
+    if not isinstance(temp_id, int) or not 0 <= temp_id < len(articles):
+        return None, None
+    if (
+        not isinstance(source_ref, str)
+        or not isinstance(source_title, str)
+        or source_ref != articles[temp_id].get("provider_article_id")
+        or source_title != articles[temp_id].get("raw_title")
+    ):
+        LOGGER.warning(
+            "Discarding AI decision with mismatched source identity: "
+            "temp_id=%s source_ref=%s",
+            temp_id,
+            source_ref,
+        )
+        return None, None
+    if source_ref in seen_refs:
+        return None, None
+
+    news_type = decision.get("news_type")
+    title = decision.get("title")
+    content = decision.get("content")
+    importance_score = decision.get("importance_score")
+    category = decision.get("category")
+    selection_reason = decision.get("selection_reason")
+
+    def failed(reason: str) -> tuple[None, str]:
+        LOGGER.warning(
+            "Discarding AI decision that failed quality validation: "
+            "source_ref=%s reason=%s",
+            source_ref,
+            reason,
+        )
+        return None, reason
+
+    if (
+        news_type not in SELECTABLE_NEWS_TYPES
+        or not isinstance(title, str)
+        or not title.strip()
+        or not isinstance(content, str)
+        or not content.strip()
+        or isinstance(importance_score, bool)
+        or not isinstance(importance_score, (int, float))
+        or importance_score < 7
+        or category not in SELECTABLE_CATEGORIES
+        or not isinstance(selection_reason, str)
+        or not selection_reason.strip()
+    ):
+        return failed("invalid_fields")
+
+    title = _normalize_known_korean_terms(articles[temp_id], title.strip())
+    content = _normalize_known_korean_terms(articles[temp_id], content.strip())
+    if _has_incomplete_title(title, content):
+        return failed("incomplete_title")
+    if _has_opposite_title_content_direction(title, content):
+        return failed("opposing_title_content_direction")
+    if _has_malformed_korean_amount(f"{title} {content}"):
+        return failed("malformed_korean_amount")
+    if _title_numbers_missing_from_content(title, content):
+        return failed("title_numbers_missing_from_content")
+    if not _contains_korean(title) or not _contains_korean(content):
+        return failed("not_korean")
+    if _has_untranslated_english_prose(title, content):
+        return failed("untranslated_english_prose")
+    if _has_unexplained_specialist_acronym(title, content):
+        return failed("unexplained_specialist_acronym")
+    if _has_ambiguous_percentage_growth(content):
+        return failed("unnamed_percentage_metric")
+    if _has_misattributed_fund_return(articles[temp_id], title, content):
+        return failed("misattributed_fund_return")
+    if _misstates_primary_transaction_actor(articles[temp_id], title, content):
+        return failed("incorrect_primary_transaction_actor")
+    if _missing_source_geography(articles[temp_id], title, content, category):
+        return failed("missing_source_geography")
+    if not _is_valid_report_summary(content):
+        return failed("invalid_report_style_summary")
+    if _unsupported_summary_numbers(articles[temp_id], title, content):
+        return failed("unsupported_source_numbers")
+
+    item = articles[temp_id].copy()
+    item["normalized_title"] = title
+    item["normalized_content"] = content
+    item["importance_score"] = _normalize_importance_score(
+        articles[temp_id],
+        importance_score,
+    )
+    item["category"] = category
+    item["news_type"] = news_type
+    item["selection_reason"] = selection_reason.strip()
+    return item, None
+
+
 def select_and_summarize(
     articles: list[dict],
     generator,
     *,
     batch_size: int = 10,
     recent_news: list[dict] | None = None,
-) -> list[dict]:
+) -> SelectionResult:
     """Keep new, economically relevant developments and summarize them in Korean."""
     if not articles:
-        return []
+        return SelectionResult()
 
     recent_news_context = [
         {
@@ -2054,9 +2197,11 @@ def select_and_summarize(
         and not _is_low_value_item(article)
     ]
     if not candidate_indexes:
-        return []
+        return SelectionResult()
 
-    decisions = []
+    selected = []
+    seen_refs = set()
+    retryable_urls = set()
     for start in range(0, len(candidate_indexes), batch_size):
         batch_indexes = candidate_indexes[start : start + batch_size]
         candidates = [
@@ -2078,192 +2223,84 @@ def select_and_summarize(
             try:
                 response_text = _response_text(generator(selection_prompt))
                 batch_decisions = _load_decisions(response_text, generator)
-                decisions.extend(batch_decisions)
                 break
             except ValueError:
                 if selection_attempt == 1:
                     raise
 
-    selected = []
-    seen_refs = set()
-    for decision in decisions:
-        if not isinstance(decision, dict):
+        repair_payload_by_ref = {}
+        for decision in batch_decisions:
+            item, failure_reason = _decision_to_item(
+                decision,
+                articles,
+                seen_refs,
+            )
+            if item is not None:
+                selected.append(item)
+                seen_refs.add(item["provider_article_id"])
+                continue
+            if failure_reason is None:
+                continue
+
+            temp_id = decision["temp_id"]
+            source_ref = decision["source_ref"]
+            candidate = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate["temp_id"] == temp_id
+                    and candidate["source_ref"] == source_ref
+                ),
+                None,
+            )
+            if candidate is not None:
+                repair_payload_by_ref[source_ref] = {
+                    "source_article": candidate,
+                    "rejected_draft": decision,
+                    "validation_error": failure_reason,
+                }
+
+        if not repair_payload_by_ref:
             continue
 
-        temp_id = decision.get("temp_id")
-        source_ref = decision.get("source_ref")
-        source_title = decision.get("source_title")
-        news_type = decision.get("news_type")
-        title = decision.get("title")
-        content = decision.get("content")
-        importance_score = decision.get("importance_score")
-        category = decision.get("category")
-        selection_reason = decision.get("selection_reason")
-        if not isinstance(temp_id, int) or not 0 <= temp_id < len(articles):
-            continue
-        if (
-            isinstance(source_ref, str)
-            and isinstance(source_title, str)
-            and (
-                source_ref != articles[temp_id].get("provider_article_id")
-                or source_title != articles[temp_id].get("raw_title")
+        unresolved_refs = set(repair_payload_by_ref)
+        try:
+            repair_response = generator(
+                _quality_repair_prompt(list(repair_payload_by_ref.values()))
             )
-        ):
+            repaired_decisions = _decode_json_array(_response_text(repair_response))
+        except Exception as error:
             LOGGER.warning(
-                "Discarding AI decision with mismatched source identity: "
-                "temp_id=%s source_ref=%s",
-                temp_id,
-                source_ref,
+                "Focused AI quality repair failed for %s article(s): %s",
+                len(unresolved_refs),
+                error,
             )
-            continue
-        if (
-            not isinstance(source_ref, str)
-            or source_ref in seen_refs
-            or not isinstance(source_title, str)
-            or news_type not in SELECTABLE_NEWS_TYPES
-            or not isinstance(title, str)
-            or not title.strip()
-            or not isinstance(content, str)
-            or not content.strip()
-            or isinstance(importance_score, bool)
-            or not isinstance(importance_score, (int, float))
-            or importance_score < 7
-            or category not in SELECTABLE_CATEGORIES
-            or not isinstance(selection_reason, str)
-            or not selection_reason.strip()
-        ):
-            continue
-        title = _normalize_known_korean_terms(articles[temp_id], title.strip())
-        content = _normalize_known_korean_terms(articles[temp_id], content.strip())
-        if _has_incomplete_title(title, content):
-            LOGGER.warning(
-                "Discarding AI decision with incomplete title: source_ref=%s",
-                source_ref,
-            )
-            continue
-        if _has_opposite_title_content_direction(title, content):
-            LOGGER.warning(
-                "Discarding AI decision with opposing title/content direction: "
-                "source_ref=%s",
-                source_ref,
-            )
-            continue
-        if _has_malformed_korean_amount(f"{title} {content}"):
-            LOGGER.warning(
-                "Discarding AI decision with malformed Korean amount: "
-                "source_ref=%s",
-                source_ref,
-            )
-            continue
-        missing_title_numbers = _title_numbers_missing_from_content(title, content)
-        if missing_title_numbers:
-            values = ", ".join(sorted(missing_title_numbers))
-            LOGGER.warning(
-                "Discarding AI decision with title numbers missing from content: "
-                "source_ref=%s values=%s",
-                source_ref,
-                values,
-            )
-            continue
-        if not _contains_korean(title) or not _contains_korean(content):
-            LOGGER.warning(
-                "Discarding AI decision that is not Korean: source_ref=%s",
-                source_ref,
-            )
-            continue
-        if _has_untranslated_english_prose(title, content):
-            LOGGER.warning(
-                "Discarding AI decision with untranslated English prose: "
-                "source_ref=%s",
-                source_ref,
-            )
-            continue
-        if _has_unexplained_specialist_acronym(title, content):
-            LOGGER.warning(
-                "Discarding AI decision with unexplained specialist acronym: "
-                "source_ref=%s",
-                source_ref,
-            )
-            continue
-        if _has_ambiguous_percentage_growth(content):
-            LOGGER.warning(
-                "Discarding AI decision with unnamed percentage metric: "
-                "source_ref=%s",
-                source_ref,
-            )
-            continue
-        if _has_misattributed_fund_return(
-            articles[temp_id],
-            title,
-            content,
-        ):
-            LOGGER.warning(
-                "Discarding AI decision with misattributed fund return: "
-                "source_ref=%s",
-                source_ref,
-            )
-            continue
-        if _misstates_primary_transaction_actor(
-            articles[temp_id],
-            title,
-            content,
-        ):
-            LOGGER.warning(
-                "Discarding AI decision with incorrect primary transaction actor: "
-                "source_ref=%s",
-                source_ref,
-            )
-            continue
-        if _missing_source_geography(
-            articles[temp_id],
-            title,
-            content,
-            category,
-        ):
-            LOGGER.warning(
-                "Discarding AI decision that omitted source geography: "
-                "source_ref=%s",
-                source_ref,
-            )
-            continue
-        if not _is_valid_report_summary(content):
-            LOGGER.warning(
-                "Discarding AI decision with invalid report-style summary: "
-                "source_ref=%s",
-                source_ref,
-            )
-            continue
-        unsupported_numbers = _unsupported_summary_numbers(
-            articles[temp_id],
-            title,
-            content,
-        )
-        if unsupported_numbers:
-            values = ", ".join(sorted(unsupported_numbers))
-            LOGGER.warning(
-                "Discarding AI decision with unsupported source numbers: "
-                "source_ref=%s values=%s",
-                source_ref,
-                values,
-            )
-            continue
+        else:
+            for repaired_decision in repaired_decisions:
+                if not isinstance(repaired_decision, dict):
+                    continue
+                repaired_ref = repaired_decision.get("source_ref")
+                if repaired_ref not in unresolved_refs:
+                    continue
+                item, failure_reason = _decision_to_item(
+                    repaired_decision,
+                    articles,
+                    seen_refs,
+                )
+                if item is None:
+                    continue
+                selected.append(item)
+                seen_refs.add(item["provider_article_id"])
+                unresolved_refs.remove(repaired_ref)
 
-        importance_score = _normalize_importance_score(
-            articles[temp_id],
-            importance_score,
-        )
+        for unresolved_ref in unresolved_refs:
+            temp_id = repair_payload_by_ref[unresolved_ref]["rejected_draft"][
+                "temp_id"
+            ]
+            retryable_urls.add(articles[temp_id]["original_url"])
 
-        item = articles[temp_id].copy()
-        item["normalized_title"] = title
-        item["normalized_content"] = content
-        item["importance_score"] = importance_score
-        item["category"] = category
-        item["news_type"] = news_type
-        item["selection_reason"] = selection_reason.strip()
-        selected.append(item)
-        seen_refs.add(source_ref)
-
-    return _deduplicate_against_recent(
+    deduplicated = _deduplicate_against_recent(
         _deduplicate_selected(selected),
         recent_news_context,
     )
+    return SelectionResult(deduplicated, retryable_urls=retryable_urls)
