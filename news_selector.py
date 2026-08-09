@@ -17,7 +17,13 @@ SELECTABLE_NEWS_TYPES = {
     "official_announcement",
     "follow_up",
 }
-SELECTABLE_CATEGORIES = {"market", "indicator", "geopolitics", "corporate"}
+SELECTABLE_CATEGORIES = {
+    "market",
+    "indicator",
+    "geopolitics",
+    "corporate",
+    "policy",
+}
 NEWS_SELECTION_RESPONSE_FORMAT = {
     "type": "json_schema",
     "json_schema": {
@@ -31,7 +37,7 @@ NEWS_SELECTION_RESPONSE_FORMAT = {
                     "temp_id": {"type": "integer"},
                     "source_ref": {"type": "string"},
                     "source_title": {"type": "string", "maxLength": 500},
-                    "title": {"type": "string", "maxLength": 35},
+                    "title": {"type": "string", "maxLength": 55},
                     "content": {"type": "string", "maxLength": 110},
                     "importance_score": {"type": "integer", "minimum": 7, "maximum": 10},
                     "category": {
@@ -1905,9 +1911,10 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 
 분류 기준:
 - `indicator`: 정부·중앙은행·공식기관이 발표한 물가·고용·성장률·생산·소비 등 수치형 경제지표
-- `market`: 주식·채권·외환·원자재·가상자산 시장과 통화·금융정책
+- `market`: 주식·채권·외환·원자재·가상자산 시장과 중앙은행 통화정책
 - `geopolitics`: 전쟁·외교·제재·국가 간 갈등
-- `corporate`: 기업 실적·인수합병·기술·공급망과 특정 산업에 직접 적용되는 규제
+- `policy`: 법률·세제·정부 정책과 시장·산업·다수 기업 또는 소비자에게 적용되는 규제
+- `corporate`: 기업 실적·인수합병·기술·공급망·소송과 특정 기업만 대상으로 한 규제 집행
 
 [최근 24시간 저장 뉴스 - 중복 비교 전용]
 {json.dumps(recent_news, ensure_ascii=False)}
@@ -1926,7 +1933,7 @@ JSON 리스트만 반환하세요. 선택할 기사가 없으면 []를 반환하
   "title": 핵심 사건이 드러나는 가급적 35자, 완결성을 위해 최대 55자 한국어 제목,
   "content": 확인된 사실만 담은 한국어 110자 이내 1~2문장 요약,
   "importance_score": 기존 저장 기준과 동일한 7~10,
-  "category": "market" | "indicator" | "geopolitics" | "corporate",
+  "category": "market" | "indicator" | "geopolitics" | "corporate" | "policy",
   "news_type": "breaking" | "new_development" | "official_announcement" | "follow_up",
   "selection_reason": 새로 발생·발표·결정·변경된 사실을 구체적으로 적은 한 문장
     }}

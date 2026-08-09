@@ -339,6 +339,18 @@ class ExistingContractTests(unittest.TestCase):
             },
         )
 
+    def test_maps_policy_category_to_existing_breaking_news_row(self):
+        item = selected(article())
+        item["category"] = "policy"
+
+        row = to_breaking_news_row(item)
+
+        self.assertEqual(row["category"], "policy")
+        self.assertEqual(
+            set(row),
+            {"title", "content", "importance_score", "category", "original_url"},
+        )
+
     def test_regular_news_targets_realtime_news_subscribers(self):
         for score in (7, 8):
             with self.subTest(score=score):

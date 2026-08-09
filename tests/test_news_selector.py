@@ -1,7 +1,11 @@
 from types import SimpleNamespace
 import unittest
 
-from news_selector import select_and_summarize
+from news_selector import (
+    NEWS_SELECTION_RESPONSE_FORMAT,
+    SELECTABLE_CATEGORIES,
+    select_and_summarize,
+)
 
 
 class FakeGenerator:
@@ -2918,6 +2922,57 @@ class NewsSelectorTests(unittest.TestCase):
             [item["provider_article_id"] for item in selected],
             ["dated-policy"],
         )
+
+    def test_allows_policy_category_and_defines_its_boundary(self):
+        source = article(
+            "policy-tax-law",
+            "Government introduces tax credit for 6 strategic industries",
+            "The new tax credit applies across six strategic industries.",
+            "https://example.com/policy-tax-law",
+        )
+        response = """[
+            {
+                "temp_id": 0,
+                "source_ref": "policy-tax-law",
+                "source_title": "Government introduces tax credit for 6 strategic industries",
+                "title": "정부, 6대 전략산업 국내생산 세액공제 도입",
+                "content": "정부가 6대 전략산업에 적용되는 국내생산 세액공제를 도입했습니다.",
+                "importance_score": 8,
+                "category": "policy",
+                "news_type": "official_announcement",
+                "selection_reason": "여러 전략산업에 적용되는 세제 정책이 발표됐습니다."
+            }
+        ]"""
+
+        class PolicyAwareGenerator:
+            def __init__(self):
+                self.prompts = []
+
+            def __call__(self, prompt):
+                self.prompts.append(prompt)
+                required_fragments = (
+                    "`policy`",
+                    "특정 기업만 대상으로 한",
+                )
+                text = response if all(
+                    fragment in prompt for fragment in required_fragments
+                ) else "[]"
+                return SimpleNamespace(text=text)
+
+        selected = select_and_summarize([source], PolicyAwareGenerator())
+
+        self.assertEqual(
+            [item["category"] for item in selected],
+            ["policy"],
+        )
+
+    def test_response_schema_allows_complete_titles_up_to_fifty_five_characters(self):
+        title_schema = NEWS_SELECTION_RESPONSE_FORMAT["json_schema"]["schema"][
+            "items"
+        ]["properties"]["title"]
+
+        self.assertEqual(title_schema["maxLength"], 55)
+        self.assertIn("policy", SELECTABLE_CATEGORIES)
 
 if __name__ == "__main__":
     unittest.main()
