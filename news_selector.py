@@ -492,6 +492,128 @@ def _is_low_value_item(article: dict) -> bool:
             "승인",
         )
     )
+    affirmative_text = re.sub(
+        r"\b(?:no|without)\s+(?:new\s+)?(?:deal|contract|tender|investment|"
+        r"transaction|result|shutdown|closure|cancellations?|financial impact|"
+        r"official action)\b",
+        "",
+        text,
+    )
+    material_news_event = any(
+        marker in affirmative_text
+        for marker in (
+            "binding agreement",
+            "binding contract",
+            "signed agreement",
+            "signed contract",
+            "supply contract",
+            "launches tender",
+            "launched tender",
+            "completed acquisition",
+            "announced investment",
+            "reports revenue",
+            "reported revenue",
+            "reports profit",
+            "reported profit",
+            "raises guidance",
+            "cuts guidance",
+            "official investigation",
+            "regulatory action",
+            "government action",
+            "airport closes",
+            "airport closed",
+            "forced airlines to cancel",
+            "supply disruption",
+        )
+    )
+    backward_stock_comparison = (
+        any(marker in title for marker in (" versus ", " vs ", " vs. "))
+        and any(
+            marker in text
+            for marker in (
+                "return",
+                "past performance",
+                "historical stock performance",
+                "six-month",
+                "year-to-date",
+            )
+        )
+        and any(marker in text for marker in ("stock", "share", "performance"))
+    )
+    if backward_stock_comparison and not material_news_event:
+        return True
+    if (
+        re.match(r"^(?:how|why)\b", title)
+        and any(marker in text for marker in ("business model", "how it works"))
+        and any(marker in text for marker in ("evergreen", "explainer", "works"))
+        and not material_news_event
+    ):
+        return True
+    if (
+        any(
+            marker in text
+            for marker in (
+                "show interest in",
+                "shows interest in",
+                "express interest in",
+                "expressed interest in",
+                "potential buyers",
+            )
+        )
+        and not material_news_event
+    ):
+        return True
+    if (
+        any(
+            marker in title
+            for marker in ("faces a test", "faces test", "what to watch")
+        )
+        and any(marker in text for marker in ("outlook", "previews", "future risk"))
+        and not material_news_event
+    ):
+        return True
+    if (
+        any(marker in title for marker in ("blocks", "blocked", "suspends"))
+        and any(marker in text for marker in ("analyst", "account dispute", "platform dispute"))
+        and not any(
+            marker in text
+            for marker in (
+                "fraud",
+                "scam",
+                "lawsuit",
+                "court",
+                "regulator",
+                "government",
+                "material loss",
+            )
+        )
+        and not material_company_context
+    ):
+        return True
+    if (
+        "airport" in text
+        and any(
+            marker in text
+            for marker in (
+                "narrowly avoid collision",
+                "narrowly avoids collision",
+                "near collision",
+                "near miss",
+            )
+        )
+        and not material_news_event
+        and not any(
+            marker in affirmative_text
+            for marker in (
+                "fatal",
+                "injured",
+                "investigation opened",
+                "regulator ordered",
+                "supply disruption",
+            )
+        )
+    ):
+        return True
     if _has_conflicting_revenue_growth_series(description):
         return True
     if (
@@ -1026,6 +1148,25 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
             "네트워크 광고 이니셔티브(NAI)",
         )
         value = value.replace("이니셔티브(NAI)이", "이니셔티브(NAI)가")
+    if any(
+        marker in source_text
+        for marker in (
+            "employment data",
+            "jobs data",
+            "labor-market data",
+            "labour-market data",
+        )
+    ):
+        value = value.replace("취업 데이터", "고용지표")
+    if any(
+        marker in source_text
+        for marker in (
+            "share repurchase",
+            "stock repurchase",
+            "buyback",
+        )
+    ):
+        value = value.replace("주식 매수 회수", "자사주 매입")
     for source_amount, eok_amount in _billion_to_eok_equivalents(source_text):
         value = re.sub(
             rf"(?<![\d.]){re.escape(source_amount)}\s*억\s*달러",
@@ -1244,14 +1385,128 @@ def _misstates_primary_transaction_actor(
     return False
 
 
+def _has_speculative_event_language(value: str) -> bool:
+    normalized = value.casefold()
+    marker_match = any(
+        marker in normalized
+        for marker in (
+            " may ",
+            "may have",
+            " might ",
+            " could ",
+            "reportedly",
+            "estimated",
+            "suspected",
+            "possible intervention",
+            "intervention possible",
+            "possibility of",
+            "appears to have",
+            "가능성",
+            "추정",
+            "관측",
+            "의혹",
+            "전망",
+        )
+    )
+    speculative_action = re.search(
+        r"\bexpected to\s+(?:intervene|conduct|cut|raise|halt|suspend|declare)\b",
+        normalized,
+    )
+    return marker_match or bool(speculative_action)
+
+
+def _has_confirmed_systemic_event(source_text: str) -> bool:
+    if _has_speculative_event_language(source_text):
+        return False
+
+    confirmed_action = any(
+        marker in source_text
+        for marker in (
+            "conduct joint",
+            "conducted joint",
+            "conducts joint",
+            "confirmed direct",
+            "intervened directly",
+            "carried out",
+            "implemented",
+            "announced emergency",
+            "declared default",
+            "공동 개입을 실시",
+            "공동 개입 실시",
+            "직접 개입",
+            "긴급 금리",
+            "긴급 유동성",
+            "거래 전면 중단",
+            "국가 부도 선언",
+        )
+    )
+    if not confirmed_action:
+        return False
+
+    foreign_exchange_intervention = (
+        any(
+            marker in source_text
+            for marker in (
+                "foreign-exchange",
+                "foreign exchange",
+                "fx market",
+                "currency market",
+                "yen-buying",
+                "yen intervention",
+                "외환시장",
+                "환율시장",
+                "엔화",
+            )
+        )
+        and "interven" in source_text
+        or "시장 개입" in source_text
+    )
+    emergency_central_bank_action = any(
+        marker in source_text
+        for marker in (
+            "emergency rate cut",
+            "emergency rate increase",
+            "emergency liquidity",
+            "긴급 금리 인하",
+            "긴급 금리 인상",
+            "긴급 유동성",
+        )
+    )
+    market_wide_halt = any(
+        marker in source_text
+        for marker in (
+            "market-wide trading halt",
+            "marketwide trading halt",
+            "all trading halted",
+            "거래 전면 중단",
+        )
+    )
+    sovereign_default = any(
+        marker in source_text
+        for marker in (
+            "sovereign default",
+            "declared default",
+            "국가 부도 선언",
+        )
+    )
+    return any(
+        (
+            foreign_exchange_intervention,
+            emergency_central_bank_action,
+            market_wide_halt,
+            sovereign_default,
+        )
+    )
+
+
 def _normalize_importance_score(article: dict, importance_score):
-    if importance_score < 9:
-        return importance_score
 
     source_text = " ".join(
         article.get(field) or ""
         for field in ("raw_title", "raw_description", "raw_content")
     ).casefold()
+    if importance_score < 9:
+        return 9 if _has_confirmed_systemic_event(source_text) else importance_score
     systemic_markers = (
         "intervention",
         "emergency",
@@ -1656,6 +1911,128 @@ def _unsupported_summary_numbers(article: dict, title: str, content: str) -> set
     return summary_numbers - source_numbers
 
 
+def _has_definitive_title_for_speculative_event(
+    article: dict,
+    title: str,
+    content: str,
+) -> bool:
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    )
+    if not _has_speculative_event_language(source_text):
+        return False
+    if not _has_speculative_event_language(content):
+        return False
+    if _has_speculative_event_language(title):
+        return False
+    return any(
+        marker in title
+        for marker in (
+            "개입",
+            "인수",
+            "승인",
+            "사임",
+            "체결",
+            "실시",
+            "금지",
+            "중단",
+            "발표",
+            "결정",
+        )
+    )
+
+
+def _source_metric_numbers(article: dict) -> set[str]:
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    )
+    numbers = set()
+    metric_unit_pattern = re.compile(
+        r"^\s*(?:%|percent(?:age)?|basis points?|bps|billion|million|trillion|"
+        r"thousand|dollars?|won|yuan|yen|euros?|pounds?|barrels?(?:\s+per\s+day)?|"
+        r"boe\s*/\s*d|tons?|tonnes?|megawatts?|gigawatts?|mw|gw|억|조|원|달러|"
+        r"엔|유로|위안|배럴|톤)",
+        flags=re.IGNORECASE,
+    )
+    for match in re.finditer(r"\d+(?:,\d{3})*(?:\.\d+)?", source_text):
+        prefix = source_text[max(0, match.start() - 2) : match.start()]
+        suffix = source_text[match.end() : match.end() + 24]
+        if metric_unit_pattern.search(suffix) or any(
+            prefix.endswith(symbol) for symbol in ("$", "€", "£", "₩")
+        ):
+            numbers.add(_normalize_number(match.group(0)))
+    for _, eok_amount in _billion_to_eok_equivalents(source_text):
+        numbers.add(_normalize_number(eok_amount))
+        numbers.update(_numeric_tokens(_format_decimal_eok_amount(eok_amount)))
+    for _, korean_amount in _million_to_korean_equivalents(source_text):
+        numbers.update(_numeric_tokens(korean_amount))
+    return numbers
+
+
+def _is_missing_primary_change_metric(
+    article: dict,
+    title: str,
+    content: str,
+) -> bool:
+    generated_text = f"{title} {content}"
+    generated_change = any(
+        marker in generated_text
+        for marker in (
+            "상승",
+            "하락",
+            "증가",
+            "감소",
+            "급증",
+            "급감",
+            "성장",
+            "개선",
+            "악화",
+            "늘었",
+            "줄었",
+        )
+    )
+    if not generated_change:
+        return False
+
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    ).casefold()
+    source_change = any(
+        marker in source_text
+        for marker in (
+            " rises ",
+            " rise ",
+            " rose ",
+            " increases ",
+            " increased ",
+            " grows ",
+            " grew ",
+            " growth ",
+            " falls ",
+            " fell ",
+            " declines ",
+            " declined ",
+            " drops ",
+            " dropped ",
+            "상승",
+            "하락",
+            "증가",
+            "감소",
+            "급증",
+            "급감",
+        )
+    )
+    if not source_change:
+        return False
+
+    source_numbers = _source_metric_numbers(article)
+    generated_numbers = _event_key_metric_tokens(generated_text)
+    return bool(source_numbers) and not bool(source_numbers & generated_numbers)
+
+
 def _similarity_text(value: str) -> str:
     return re.sub(r"[^0-9a-z가-힣]+", " ", value.casefold()).strip()
 
@@ -1752,10 +2129,80 @@ def _event_key_metric_tokens(value: str) -> set[str]:
     return metrics - period_numbers
 
 
+def _has_overdraft_delinquency_terms(value: str) -> bool:
+    normalized = value.casefold()
+    return any(
+        marker in normalized
+        for marker in ("마이너스통장", "신용한도대출", "한도대출")
+    ) and any(marker in normalized for marker in ("연체율", "연체"))
+
+
+def _has_five_major_bank_context(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", value.casefold())
+    return any(
+        marker in normalized
+        for marker in (
+            "5대은행",
+            "5대시중은행",
+            "다섯대은행",
+        )
+    )
+
+
+def _overdraft_delinquency_direction(value: str) -> str | None:
+    if any(marker in value for marker in ("상승", "증가", "급증", "늘었", "높아")):
+        return "up"
+    if any(marker in value for marker in ("하락", "감소", "급감", "줄었", "낮아")):
+        return "down"
+    return None
+
+
+def _is_same_overdraft_delinquency_release(
+    first_text: str,
+    second_text: str,
+) -> bool:
+    if not all(
+        _has_overdraft_delinquency_terms(text)
+        and _has_five_major_bank_context(text)
+        for text in (first_text, second_text)
+    ):
+        return False
+
+    first_periods = _event_period_tokens(first_text)
+    second_periods = _event_period_tokens(second_text)
+    if not first_periods or not second_periods:
+        return False
+    if first_periods.isdisjoint(second_periods):
+        return False
+
+    shared_metrics = (
+        _event_key_metric_tokens(first_text) - {"5"}
+    ) & (_event_key_metric_tokens(second_text) - {"5"})
+    if shared_metrics:
+        return True
+    first_direction = _overdraft_delinquency_direction(first_text)
+    second_direction = _overdraft_delinquency_direction(second_text)
+    return bool(first_direction and first_direction == second_direction)
+
+
 def _has_explicit_event_dimension_conflict(
     first_text: str,
     second_text: str,
 ) -> bool:
+    overdraft_pair = all(
+        _has_overdraft_delinquency_terms(text)
+        and _has_five_major_bank_context(text)
+        for text in (first_text, second_text)
+    )
+    if overdraft_pair:
+        first_periods = _event_period_tokens(first_text)
+        second_periods = _event_period_tokens(second_text)
+        return bool(
+            first_periods
+            and second_periods
+            and first_periods.isdisjoint(second_periods)
+        )
+
     shared_concepts = _event_concept_tokens(first_text) & _event_concept_tokens(
         second_text
     )
@@ -1926,7 +2373,10 @@ def _has_shared_event_signature(
     ):
         return False
 
-    if _has_same_labor_release_signature(
+    if _is_same_overdraft_delinquency_release(
+        f"{first_title} {first_content}",
+        f"{second_title} {second_content}",
+    ) or _has_same_labor_release_signature(
         first_title,
         first_content,
         second_title,
@@ -2100,10 +2550,16 @@ def _deduplicate_against_recent(
 
 
 def _source_completeness(article: dict) -> int:
-    return sum(
+    source_length = sum(
         len(article.get(field) or "")
         for field in ("raw_title", "raw_description", "raw_content")
     )
+    normalized_text = " ".join(
+        article.get(field) or ""
+        for field in ("normalized_title", "normalized_content")
+    )
+    source_backed_metrics = _event_key_metric_tokens(normalized_text)
+    return source_length + len(normalized_text) + (100 * len(source_backed_metrics))
 
 
 def _deduplicate_selected(articles: list[dict]) -> list[dict]:
@@ -2283,6 +2739,8 @@ def _quality_repair_prompt(repair_candidates: list[dict]) -> str:
 아래 기사는 경제 뉴스로 선택됐지만 생성된 제목 또는 요약이 품질 검사에 실패했습니다.
 기사 선택 자체를 다시 판단하지 말고 제목과 요약의 품질 오류만 수정하세요.
 원문 후보에 없는 사실·숫자·인과관계를 추가하지 마세요.
+원문이 가능성·추정으로 보도한 사건은 제목도 확정형으로 쓰지 마세요.
+원문이 수치로 증가·감소를 보도했다면 핵심 변화 수치 하나 이상을 요약에 포함하세요.
 각 항목의 temp_id, source_ref, source_title은 한 글자도 바꾸지 마세요.
 완전히 고칠 수 없는 항목은 결과에서 제외하세요.
 
@@ -2371,6 +2829,12 @@ def _decision_to_item(
         return failed("incomplete_title")
     if _has_opposite_title_content_direction(title, content):
         return failed("opposing_title_content_direction")
+    if _has_definitive_title_for_speculative_event(
+        articles[temp_id],
+        title,
+        content,
+    ):
+        return failed("confidence_mismatch")
     if _has_malformed_korean_amount(f"{title} {content}"):
         return failed("malformed_korean_amount")
     if _title_numbers_missing_from_content(title, content):
@@ -2383,6 +2847,8 @@ def _decision_to_item(
         return failed("unexplained_specialist_acronym")
     if _has_ambiguous_percentage_growth(content):
         return failed("unnamed_percentage_metric")
+    if _is_missing_primary_change_metric(articles[temp_id], title, content):
+        return failed("missing_primary_metric")
     if _has_misattributed_fund_return(articles[temp_id], title, content):
         return failed("misattributed_fund_return")
     if _misstates_primary_transaction_actor(articles[temp_id], title, content):

@@ -46,6 +46,29 @@ def article(article_id, title, description, url):
     }
 
 
+def decision_for(
+    source,
+    temp_id,
+    *,
+    title,
+    content,
+    importance_score=8,
+    category="corporate",
+    news_type="new_development",
+):
+    return {
+        "temp_id": temp_id,
+        "source_ref": source["provider_article_id"],
+        "source_title": source["raw_title"],
+        "title": title,
+        "content": content,
+        "importance_score": importance_score,
+        "category": category,
+        "news_type": news_type,
+        "selection_reason": "새로운 경제 관련 사실이 확인됐습니다.",
+    }
+
+
 class NewsSelectorTests(unittest.TestCase):
     def test_keeps_only_new_economic_development_and_preserves_source_facts(self):
         articles = [
@@ -102,7 +125,10 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(selected[0]["news_type"], "new_development")
         self.assertEqual(len(generator.prompts), 1)
         self.assertIn("Chipmaker reports quarterly earnings", generator.prompts[0])
-        self.assertIn("A comparison of valuations and past performance.", generator.prompts[0])
+        self.assertNotIn(
+            "A comparison of valuations and past performance.",
+            generator.prompts[0],
+        )
         self.assertIn("110자 이내", generator.prompts[0])
         self.assertIn("원문에 없는 전망·인과관계", generator.prompts[0])
 
@@ -3459,6 +3485,407 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(
             [item["provider_article_id"] for item in selected],
             ["dated-policy"],
+        )
+
+    def test_upgrades_confirmed_joint_fx_intervention_to_urgent(self):
+        source = article(
+            "confirmed-joint-intervention",
+            "US and Japan conduct joint yen-buying intervention",
+            "Officials confirmed direct foreign-exchange intervention.",
+            "https://example.com/confirmed-joint-intervention",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="미·일, 엔화 방어 위해 공동 시장 개입",
+                    content="미국과 일본이 엔화 방어를 위해 외환시장에 공동 개입했습니다.",
+                    importance_score=8,
+                    category="market",
+                    news_type="breaking",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["importance_score"], 9)
+
+    def test_does_not_upgrade_speculative_joint_intervention_report(self):
+        source = article(
+            "possible-joint-intervention",
+            "US and Japan may have intervened to support yen",
+            "Traders estimated that a joint intervention could have occurred.",
+            "https://example.com/possible-joint-intervention",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="미·일, 엔화 방어 위한 공동 개입 가능성",
+                    content="미국과 일본이 외환시장에 개입했을 가능성이 제기됐습니다.",
+                    importance_score=8,
+                    category="market",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["importance_score"], 8)
+
+    def test_upgrades_confirmed_intervention_when_only_its_effect_is_expected(self):
+        source = article(
+            "confirmed-intervention-expected-effect",
+            "US and Japan conduct joint yen-buying intervention",
+            "Officials confirmed the action, which is expected to stabilize the yen.",
+            "https://example.com/confirmed-intervention-expected-effect",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="미·일, 엔화 방어 위해 공동 시장 개입",
+                    content="미국과 일본이 엔화 방어를 위해 외환시장에 공동 개입했습니다.",
+                    importance_score=8,
+                    category="market",
+                    news_type="breaking",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["importance_score"], 9)
+
+    def test_rejects_clear_non_event_analysis_but_keeps_concrete_developments(self):
+        rejected = [
+            article(
+                "stock-return-comparison",
+                "Broadcom six-month return of 36% versus Nvidia",
+                "A backward-looking comparison of historical stock performance.",
+                "https://example.com/comparison",
+            ),
+            article(
+                "business-model-explainer",
+                "How McDonald's real-estate business model works",
+                "An evergreen explainer with no new transaction or result.",
+                "https://example.com/explainer",
+            ),
+            article(
+                "soft-buyer-interest",
+                "Middle East buyers show interest in Canadian LNG",
+                "Potential buyers expressed interest but no deal or tender was announced.",
+                "https://example.com/interest",
+            ),
+            article(
+                "market-preview",
+                "Metals rally faces a test from future risks",
+                "The market outlook previews risks without a new action or price move.",
+                "https://example.com/preview",
+            ),
+            article(
+                "analyst-platform-dispute",
+                "OpenAI blocks bitcoin analyst after account dispute",
+                "The analyst moved to a Chinese chatbot after the platform dispute.",
+                "https://example.com/dispute",
+            ),
+            article(
+                "minor-airport-incident",
+                "Aircraft narrowly avoid collision at Sydney airport",
+                "There was no shutdown, cancellation, financial impact, or official action.",
+                "https://example.com/airport",
+            ),
+        ]
+        kept = [
+            article(
+                "lng-contract",
+                "Buyer signs Canadian LNG supply contract",
+                "A binding 20-year supply contract was signed.",
+                "https://example.com/contract",
+            ),
+            article(
+                "airport-disruption",
+                "Sydney airport closes after collision",
+                "The shutdown forced airlines to cancel 200 flights.",
+                "https://example.com/disruption",
+            ),
+        ]
+        response = json.dumps(
+            [
+                decision_for(
+                    kept[0],
+                    6,
+                    title="캐나다 LNG, 20년 공급계약 체결",
+                    content="캐나다 LNG 구매자가 20년 장기 공급계약을 체결했습니다.",
+                ),
+                decision_for(
+                    kept[1],
+                    7,
+                    title="시드니 공항 충돌로 폐쇄·200편 취소",
+                    content="시드니 공항이 충돌 사고로 폐쇄돼 항공편 200편이 취소됐습니다.",
+                ),
+            ],
+            ensure_ascii=False,
+        )
+        generator = FakeGenerator(response)
+
+        selected = select_and_summarize(rejected + kept, generator)
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["lng-contract", "airport-disruption"],
+        )
+        for source in rejected:
+            self.assertNotIn(source["raw_title"], generator.prompts[0])
+
+    def test_normalizes_employment_data_and_share_repurchase_with_source_support(self):
+        employment = article(
+            "employment-data",
+            "US employment data weaken in July",
+            "The latest labor-market data showed slower hiring.",
+            "https://example.com/employment-data",
+        )
+        buyback = article(
+            "share-repurchase",
+            "HG completes share repurchase",
+            "The company completed its stock buyback program.",
+            "https://example.com/share-repurchase",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    employment,
+                    0,
+                    title="미국 취업 데이터 약화",
+                    content="미국 취업 데이터에서 고용 증가세가 둔화됐습니다.",
+                    category="indicator",
+                ),
+                decision_for(
+                    buyback,
+                    1,
+                    title="에이치지, 주식 매수 회수 완료",
+                    content="에이치지가 주식 매수 회수를 완료했습니다.",
+                ),
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize(
+            [employment, buyback],
+            FakeGenerator(response),
+        )
+
+        self.assertEqual(len(selected), 2)
+        self.assertIn("고용지표", selected[0]["normalized_title"])
+        self.assertIn("고용지표", selected[0]["normalized_content"])
+        self.assertIn("자사주 매입", selected[1]["normalized_title"])
+        self.assertIn("자사주 매입", selected[1]["normalized_content"])
+
+    def test_retries_definitive_title_when_source_and_summary_are_speculative(self):
+        source = article(
+            "possible-intervention",
+            "US may have intervened in yen market",
+            "Dealers estimated intervention could have occurred.",
+            "https://example.com/possible-intervention",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="미국, 엔화 방어 위해 시장 개입",
+                    content="미국이 엔화 방어에 개입한 것으로 추정됩니다.",
+                    category="market",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        result = select_and_summarize(
+            [source],
+            FakeGenerator([response, response]),
+        )
+
+        self.assertEqual(result, [])
+        self.assertEqual(
+            result.retryable_urls,
+            frozenset({source["original_url"]}),
+        )
+
+    def test_retries_quantified_trend_summary_that_omits_source_metric(self):
+        source = article(
+            "marvell-results",
+            "Marvell quarterly revenue rises 42% to $2.0 billion",
+            "Quarterly revenue increased 42% to $2.0 billion.",
+            "https://example.com/marvell-results",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="마벨, 분기 매출 증가",
+                    content="마벨의 분기 매출이 증가했습니다.",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        result = select_and_summarize(
+            [source],
+            FakeGenerator([response, response]),
+        )
+
+        self.assertEqual(result, [])
+        self.assertEqual(
+            result.retryable_urls,
+            frozenset({source["original_url"]}),
+        )
+
+    def test_does_not_treat_quarter_number_as_the_missing_change_metric(self):
+        source = article(
+            "marvell-quarter-results",
+            "Marvell second-quarter revenue rises 42% to $2.0 billion",
+            "Second-quarter revenue increased 42% to $2.0 billion.",
+            "https://example.com/marvell-quarter-results",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="마벨, 2분기 매출 증가",
+                    content="마벨의 2분기 매출이 증가했습니다.",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        result = select_and_summarize(
+            [source],
+            FakeGenerator([response, response]),
+        )
+
+        self.assertEqual(result, [])
+        self.assertEqual(
+            result.retryable_urls,
+            frozenset({source["original_url"]}),
+        )
+
+    def test_does_not_require_an_unrelated_operational_count_as_change_metric(self):
+        source = article(
+            "retail-store-expansion",
+            "Retailer revenue increased after opening 2 stores",
+            "Revenue increased as the retailer opened 2 additional stores.",
+            "https://example.com/retail-store-expansion",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="소매업체, 매장 확장 후 매출 증가",
+                    content="소매업체가 매장을 확장한 뒤 매출이 증가했습니다.",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["retail-store-expansion"],
+        )
+
+    def test_deduplicates_same_five_bank_overdraft_delinquency_release(self):
+        short = article(
+            "overdraft-age-angle",
+            "Youth and elderly credit-line delinquencies rise at five banks in July",
+            "The five major banks reported higher July credit-line delinquencies by age.",
+            "https://example.com/overdraft-age-angle",
+        )
+        complete = article(
+            "overdraft-complete",
+            "Five-bank overdraft delinquency rate rises to 0.22% in July",
+            "The five major banks reported a July overdraft delinquency rate of 0.22%.",
+            "https://example.com/overdraft-complete",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    short,
+                    0,
+                    title="청년·고령층 신용한도대출 연체 급증",
+                    content="5대 은행의 7월 분석에서 청년·고령층 신용한도대출 연체가 늘었습니다.",
+                    category="indicator",
+                ),
+                decision_for(
+                    complete,
+                    1,
+                    title="5대 은행 마이너스통장 연체율 0.22%로 상승",
+                    content="5대 은행의 7월 마이너스통장 연체율이 0.22%로 높아졌습니다.",
+                    category="indicator",
+                ),
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize(
+            [short, complete],
+            FakeGenerator(response),
+        )
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["overdraft-complete"],
+        )
+
+    def test_keeps_overdraft_delinquency_reports_for_different_months(self):
+        june = article(
+            "overdraft-june",
+            "Five-bank overdraft delinquency rate rises in June",
+            "The five major banks published their June overdraft delinquency rate.",
+            "https://example.com/overdraft-june",
+        )
+        july = article(
+            "overdraft-july",
+            "Five-bank overdraft delinquency rate rises in July",
+            "The five major banks published their July overdraft delinquency rate.",
+            "https://example.com/overdraft-july",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    june,
+                    0,
+                    title="5대 은행 6월 마이너스통장 연체율 상승",
+                    content="5대 은행의 6월 마이너스통장 연체율이 상승했습니다.",
+                    category="indicator",
+                ),
+                decision_for(
+                    july,
+                    1,
+                    title="5대 은행 7월 마이너스통장 연체율 상승",
+                    content="5대 은행의 7월 마이너스통장 연체율이 상승했습니다.",
+                    category="indicator",
+                ),
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([june, july], FakeGenerator(response))
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["overdraft-june", "overdraft-july"],
         )
 
     def test_allows_policy_category_and_defines_its_boundary(self):
