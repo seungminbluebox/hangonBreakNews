@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 
 GNEWS_TOP_HEADLINES_URL = "https://gnews.io/api/v4/top-headlines"
 DEFAULT_LOOKBACK_HOURS = 3
-DEFAULT_FEEDS = (
+BUSINESS_FEEDS = (
     {
         "market_scope": "kr",
         "country": "kr",
@@ -33,6 +33,14 @@ DEFAULT_FEEDS = (
         "max_articles": 25,
     },
 )
+WORLD_FEED = {
+    "market_scope": "world",
+    "country": None,
+    "language": "en",
+    "category": "world",
+    "max_articles": 25,
+}
+DEFAULT_FEEDS = BUSINESS_FEEDS + (WORLD_FEED,)
 
 
 class GNewsClient:
@@ -125,12 +133,31 @@ def collect_default_headlines(
     delay_seconds: float = 1.1,
     max_articles: int | None = None,
 ) -> list[dict]:
-    """Fetch Korea, US, and world feeds sequentially and remove exact duplicates."""
+    """Fetch all business and world feeds and remove exact duplicates."""
+    return _collect_headlines(
+        client,
+        feeds=DEFAULT_FEEDS,
+        fetched_at=fetched_at,
+        sleeper=sleeper,
+        delay_seconds=delay_seconds,
+        max_articles=max_articles,
+    )
+
+
+def _collect_headlines(
+    client: GNewsClient,
+    *,
+    feeds,
+    fetched_at: datetime,
+    sleeper=time.sleep,
+    delay_seconds: float = 1.1,
+    max_articles: int | None = None,
+) -> list[dict]:
     collected = []
     seen_article_ids = set()
     seen_urls = set()
 
-    for index, feed in enumerate(DEFAULT_FEEDS):
+    for index, feed in enumerate(feeds):
         feed = feed.copy()
         feed_max_articles = feed.pop("max_articles")
         articles = client.fetch_top_headlines(
@@ -149,10 +176,37 @@ def collect_default_headlines(
             seen_urls.add(original_url)
             collected.append(article)
 
-        if index < len(DEFAULT_FEEDS) - 1:
+        if index < len(feeds) - 1:
             sleeper(delay_seconds)
 
     return collected
+
+
+class ScheduledHeadlineCollector:
+    """Fetch world every five-minute cycle and business every other cycle."""
+
+    def __init__(self):
+        self.cycle_index = 0
+
+    def __call__(
+        self,
+        client: GNewsClient,
+        *,
+        fetched_at: datetime,
+        sleeper=time.sleep,
+        delay_seconds: float = 1.1,
+        max_articles: int | None = None,
+    ) -> list[dict]:
+        feeds = DEFAULT_FEEDS if self.cycle_index % 2 == 0 else (WORLD_FEED,)
+        self.cycle_index += 1
+        return _collect_headlines(
+            client,
+            feeds=feeds,
+            fetched_at=fetched_at,
+            sleeper=sleeper,
+            delay_seconds=delay_seconds,
+            max_articles=max_articles,
+        )
 
 
 def normalize_article(article: dict, market_scope: str, fetched_at: datetime) -> dict:

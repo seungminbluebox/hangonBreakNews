@@ -543,6 +543,32 @@ def _is_low_value_item(article: dict) -> bool:
     if backward_stock_comparison and not material_news_event:
         return True
     if (
+        any(marker in title for marker in (" versus ", " vs ", " vs. ", " compared"))
+        and any(
+            marker in text
+            for marker in ("market share", "valuation", "performance", "which is better")
+        )
+        and not material_news_event
+    ):
+        return True
+    if (
+        any(
+            title.startswith(marker)
+            for marker in (
+                "what to consider",
+                "things to consider",
+                "what to know before buying",
+                "buying guide",
+            )
+        )
+        and any(
+            marker in text
+            for marker in ("buyer", "buying", "purchase", "warranty", "charging")
+        )
+        and not material_news_event
+    ):
+        return True
+    if (
         re.match(r"^(?:how|why)\b", title)
         and any(marker in text for marker in ("business model", "how it works"))
         and any(marker in text for marker in ("evergreen", "explainer", "works"))
@@ -610,6 +636,24 @@ def _is_low_value_item(article: dict) -> bool:
                 "investigation opened",
                 "regulator ordered",
                 "supply disruption",
+            )
+        )
+    ):
+        return True
+    if (
+        "airport" in text
+        and any(marker in text for marker in ("baggage", "luggage", "bags"))
+        and any(marker in text for marker in ("failure", "without", "missing", "delayed"))
+        and not any(
+            marker in affirmative_text
+            for marker in (
+                "flights cancelled",
+                "flight cancellations",
+                "airport closed",
+                "airport closes",
+                "shutdown",
+                "regulator ordered",
+                "material financial impact",
             )
         )
     ):
@@ -761,6 +805,29 @@ def _is_low_value_item(article: dict) -> bool:
         )
     ):
         return True
+    if (
+        any(
+            marker in text
+            for marker in (
+                "files financial statements",
+                "filed financial statements",
+                "submits financial statements",
+                "routine filing",
+            )
+        )
+        and not any(
+            marker in affirmative_text
+            for marker in (
+                "reports revenue",
+                "reported revenue",
+                "reports profit",
+                "reported profit",
+                "raises guidance",
+                "cuts guidance",
+            )
+        )
+    ):
+        return True
     if "university" in text and "campus" in text and any(
         marker in text for marker in (" opens ", "will open", "new campus")
     ):
@@ -783,6 +850,67 @@ def _is_low_value_item(article: dict) -> bool:
         and any(marker in text for marker in ("designed for", "optimized for"))
         and not material_company_context
         and not any(marker in text for marker in ("government", "federal"))
+    ):
+        return True
+    if any(marker in text for marker in (" memorandum of understanding", " mou")):
+        binding_outcome_markers = (
+            "binding agreement",
+            "binding contract",
+            "purchase order",
+            "contract value",
+            "commercial deployment",
+            "began deployment",
+            "announced investment of",
+            "secured funding of",
+            "reports revenue",
+        )
+        if "nonbinding" in text or not any(
+            marker in affirmative_text for marker in binding_outcome_markers
+        ):
+            return True
+    if (
+        "founder" in text
+        and any(marker in text for marker in ("profile", "mother", "family"))
+        and any(marker in text for marker in ("platform", "startup"))
+        and not any(
+            marker in affirmative_text
+            for marker in (
+                "raised $",
+                "raised funding",
+                "secured funding",
+                "reports revenue",
+                "signed contract",
+                "paying customers",
+            )
+        )
+    ):
+        return True
+    recall_text = re.sub(
+        r"\b(?:no|without)\s+(?:reported\s+)?"
+        r"(?:illnesses?|hospitali[sz]ations?|deaths?|regulator order|"
+        r"material financial impact)\b",
+        "",
+        text,
+    )
+    if (
+        any(marker in text for marker in (" recall", "recalls", "recalled"))
+        and any(marker in text for marker in ("food", "product", "salmonella"))
+        and not any(
+            marker in recall_text
+            for marker in (
+                "fda orders",
+                "regulator ordered",
+                "nationwide",
+                "class i recall",
+                "hospitalized",
+                "hospitalisation",
+                "hospitalization",
+                "death",
+                "fatal",
+                "production halted",
+                "sales suspended",
+            )
+        )
     ):
         return True
     if (
@@ -830,6 +958,29 @@ def _is_low_value_item(article: dict) -> bool:
         )
     ):
         return True
+    cyber_affirmative_text = re.sub(
+        r"\b(?:no|without)\s+(?:a\s+)?(?:new\s+)?"
+        r"(?:attack|breach|loss|official action)\b",
+        "",
+        affirmative_text,
+    )
+    if (
+        any(marker in text for marker in ("cyberattack", "cyber attack"))
+        and any(marker in text for marker in ("trend", "evolves", "evolving"))
+        and any(marker in text for marker in ("experts", "broad trend"))
+        and not any(
+            marker in cyber_affirmative_text
+            for marker in (
+                "new attack",
+                "confirmed breach",
+                "data stolen",
+                "material loss",
+                "official investigation",
+                "regulatory action",
+            )
+        )
+    ):
+        return True
     if (
         any(marker in title for marker in ("calls", "describes"))
         and any(marker in title for marker in ("sales decline", "sales drop"))
@@ -864,6 +1015,76 @@ def _is_low_value_item(article: dict) -> bool:
                 "war",
                 "sanction",
                 "government decision",
+            )
+        )
+    ):
+        return True
+    material_market_driver = any(
+        marker in affirmative_text
+        for marker in (
+            "central bank",
+            "rate decision",
+            "market intervention",
+            "government decision",
+            "official data",
+            "data released",
+            "earnings announcement",
+            "profit warning",
+            "default",
+            "war began",
+            "war escalated",
+            "sanction imposed",
+            "tariff imposed",
+            "ceasefire",
+        )
+    )
+    if (
+        market_move
+        and float(market_move.group(1)) <= 2.0
+        and any(
+            marker in text
+            for marker in (
+                "stock index",
+                "benchmark index",
+                "indexes",
+                "kospi",
+                "kosdaq",
+                "s&p 500",
+                "ftse 100",
+                "stock futures",
+            )
+        )
+        and any(
+            marker in text
+            for marker in (
+                " rose ",
+                "rises",
+                "gains",
+                "rally",
+                "falls",
+                "fell",
+                "declines",
+                "declined",
+                "weakens",
+                "weakness",
+            )
+        )
+        and not material_market_driver
+    ):
+        return True
+    if (
+        "mortgage rate" in text
+        and any(marker in text for marker in ("daily average", "from "))
+        and not any(
+            marker in affirmative_text
+            for marker in (
+                "central bank cut",
+                "central bank raised",
+                "central bank announced",
+                "government announced",
+                "government imposed",
+                "new rule took effect",
+                "rate decision changed",
             )
         )
     ):
@@ -1139,6 +1360,10 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
         value = re.sub(r"액화석유가(?!스)", "액화석유가스", value)
     if "strait of hormuz" in source_text:
         value = value.replace("만유원지", "호르무즈 해협")
+    if "oil route" in source_text:
+        value = value.replace("석유로드", "원유 운송로")
+    if "contact energy" in source_text:
+        value = value.replace("컨택트 에너지", "콘택트 에너지")
     if "anglo american" in source_text:
         value = value.replace("앙골라 아메리칸", "앵글로 아메리칸")
         value = value.replace("앵글로우 아메리칸", "앵글로 아메리칸")
@@ -1269,8 +1494,93 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
 
 def _has_untranslated_english_prose(title: str, content: str) -> bool:
     return bool(
-        re.search(r"(?<![A-Za-z])[a-z]{4,}(?![A-Za-z])", f"{title} {content}")
+        re.search(
+            r"(?<![A-Za-zÀ-ÖØ-öø-ÿ])[a-zà-öø-ÿ]{4,}"
+            r"(?![A-Za-zÀ-ÖØ-öø-ÿ])",
+            f"{title} {content}",
+        )
     )
+
+
+def _has_unlocalized_financial_or_foreign_notation(title: str, content: str) -> bool:
+    text = f"{title} {content}"
+    return bool(
+        re.search(r"[$€£¥]", text)
+        or re.search(
+            r"(?<![A-Za-z0-9])\d+(?:\.\d+)?\s*[MBT]\s*"
+            r"(?:(?:[-~–]\s*\d+(?:\.\d+)?\s*[MBT])|"
+            r"(?:원|달러|유로|엔|위안|루피|페소))",
+            text,
+        )
+        or re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff]", text)
+    )
+
+
+def _has_unsupported_currency_conversion(
+    article: dict,
+    title: str,
+    content: str,
+) -> bool:
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    ).casefold()
+    currency_source_markers = {
+        "원": (" won", "krw", "₩", " 원"),
+        "달러": ("dollar", "usd", "$", "달러"),
+        "유로": ("euro", "eur", "€", "유로"),
+        "엔": (" yen", "jpy", "¥", " 엔"),
+        "위안": ("yuan", "cny", "rmb", "위안"),
+        "루피": ("rupee", "inr", "루피"),
+        "페소": ("peso", "페소"),
+    }
+    pattern = re.compile(
+        r"\d[\d,.]*\s*(원|달러|유로|엔|위안|루피|페소)\s*"
+        r"\([^)]*?\d[\d,.]*\s*(원|달러|유로|엔|위안|루피|페소)\)"
+    )
+    for source_currency, converted_currency in pattern.findall(f"{title} {content}"):
+        if source_currency == converted_currency:
+            continue
+        if not any(
+            marker in source_text
+            for marker in currency_source_markers[converted_currency]
+        ):
+            return True
+    return False
+
+
+def _has_mistranslated_english_large_unit(
+    article: dict,
+    title: str,
+    content: str,
+) -> bool:
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    )
+    summary_text = f"{title} {content}"
+    source_amounts = {
+        (match.group(1), match.group(2).casefold())
+        for match in re.finditer(
+            r"(?<![\d.])(\d+(?:\.\d+)?)\s*(million|billion|trillion|[MBT])\b",
+            source_text,
+            flags=re.IGNORECASE,
+        )
+    }
+    for amount, source_unit in source_amounts:
+        escaped_amount = re.escape(amount)
+        if source_unit in {"million", "m"}:
+            malformed_suffix = r"(?<![백천])만|억|조"
+        elif source_unit in {"billion", "b"}:
+            malformed_suffix = r"백만|천만|(?<![백천])만|억|조"
+        else:
+            malformed_suffix = r"백만|천만|(?<![백천])만|억"
+        if re.search(
+            rf"(?<![\d.]){escaped_amount}\s*(?:{malformed_suffix})",
+            summary_text,
+        ):
+            return True
+    return False
 
 
 def _has_unexplained_specialist_acronym(title: str, content: str) -> bool:
@@ -1383,6 +1693,90 @@ def _misstates_primary_transaction_actor(
         ):
             return True
     return False
+
+
+def _misstates_indirect_transaction_actor(
+    article: dict,
+    title: str,
+) -> bool:
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    ).casefold()
+    backed_actor = re.search(
+        r"[a-z0-9 .&'-]+-backed\s+([a-z0-9][a-z0-9 .&'-]*?)\s+"
+        r"(?:becomes|acquires|acquired|buys|bought|purchases|purchased|takes control)",
+        source_text,
+    )
+    if backed_actor is None:
+        return False
+    direct_actor = backed_actor.group(1).strip()
+    definitive_title_markers = (
+        "최대주주",
+        "인수",
+        "매입",
+        "지분 확보",
+        "경영권 확보",
+    )
+    relationship_title_markers = (
+        "자회사",
+        "관계사",
+        "투자한",
+        "지원하는",
+        "특수목적법인",
+        "SPC",
+        "SPV",
+        "컨소시엄",
+    )
+    return (
+        any(marker in title for marker in definitive_title_markers)
+        and direct_actor not in title.casefold()
+        and not any(marker in title for marker in relationship_title_markers)
+    )
+
+
+def _overstates_controlled_security_test(
+    article: dict,
+    title: str,
+    content: str,
+) -> bool:
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    ).casefold()
+    controlled_test_markers = (
+        "controlled security test",
+        "controlled test",
+        "authorized evaluation",
+        "evaluation environment",
+        "security evaluation",
+        "red-team",
+        "red team",
+        "sandbox",
+    )
+    if not any(marker in source_text for marker in controlled_test_markers):
+        return False
+
+    actual_incident_markers = (
+        "real-world incident",
+        "breach occurred",
+        "stole data",
+        "data theft",
+        "data exfiltration",
+        "unauthorized intrusion",
+    )
+    if any(marker in source_text for marker in actual_incident_markers):
+        return False
+
+    generated_text = f"{title} {content}"
+    overstated_incident_markers = (
+        "해킹 사고",
+        "침해 사고",
+        "사고 발생",
+        "무단 침입",
+        "데이터 탈취",
+    )
+    return any(marker in generated_text for marker in overstated_incident_markers)
 
 
 def _has_speculative_event_language(value: str) -> bool:
@@ -2469,6 +2863,71 @@ def _is_same_recent_event(article: dict, recent_item: dict) -> bool:
     )
 
 
+def _is_price_quote_only_follow_up(current_text: str, recent_text: str) -> bool:
+    asset_markers = (
+        "유가",
+        "브렌트",
+        "원유",
+        "주가",
+        "환율",
+        "지수",
+        "선물",
+        "달러",
+        "엔화",
+        "oil",
+        "brent",
+        "stock",
+        "shares",
+        "index",
+        "futures",
+    )
+    quote_markers = (
+        "상승",
+        "하락",
+        "거래",
+        "기록",
+        "회복",
+        "근접",
+        "유지",
+        "rose",
+        "fell",
+        "traded",
+        "recovered",
+        "held",
+    )
+    state_change_markers = (
+        *MATERIAL_FOLLOW_UP_MARKERS,
+        "공격",
+        "확전",
+        "휴전",
+        "제재",
+        "봉쇄",
+        "파산",
+        "인수",
+        "실적",
+        "금리 결정",
+        "attack",
+        "escalation",
+        "ceasefire",
+        "sanction",
+        "blockade",
+        "bankruptcy",
+        "acquisition",
+        "earnings",
+        "rate decision",
+    )
+    return (
+        any(marker in current_text.casefold() for marker in asset_markers)
+        and any(marker in current_text.casefold() for marker in quote_markers)
+        and bool(_numeric_tokens(current_text))
+        and not any(
+            marker in current_text.casefold()
+            and marker not in recent_text.casefold()
+            for marker in state_change_markers
+        )
+    )
+
+
 def _has_material_follow_up(article: dict, recent_item: dict) -> bool:
     if article.get("news_type") != "follow_up":
         return False
@@ -2526,6 +2985,8 @@ def _has_material_follow_up(article: dict, recent_item: dict) -> bool:
         marker in current_text.casefold()
         for marker in ROUTINE_MARKET_QUOTE_MARKERS
     ):
+        return False
+    if _is_price_quote_only_follow_up(current_text, recent_text):
         return False
     return bool(_numeric_tokens(current_text) - _numeric_tokens(recent_text))
 
@@ -2642,7 +3103,10 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 2. 경제 관련성: 경제, 금융시장, 산업, 주요 기업, 규제·정책 또는 경제에 영향을 줄 지정학적 사건과 직접 관련됨.
 
 기업 규모나 지역 범위가 작더라도 주가·재무·고용·산업·규제에 영향을 주는 구체적인 경제 사건이면 7점 후보로 유지하세요.
+지정학 기사는 전쟁 발발·확전·휴전, 국가 간 직접 공격, 경제 제재·수출 통제·관세, 에너지 시설·주요 해상 운송로 차질, 시장에 영향을 줄 협상 타결·결렬처럼 새롭고 구체적인 상태 변화가 있으면 선택하세요.
+지정학 사건 자체가 국가·에너지·교역·공급망에 광범위한 영향을 줄 수 있다면 기사에 시장 반응이 아직 적혀 있지 않아도 선택할 수 있습니다. 다만 원문에 없는 경제 영향이나 가격 전망을 요약에 만들어 넣지 마세요.
 원인·행동·대응 주체를 뒤바꾸지 말고, 누가 무엇을 결정했고 누가 반대하거나 대응했는지 원문 관계를 그대로 쓰세요.
+자회사·특수목적법인(SPC)·컨소시엄이 직접 행동한 경우 모회사 이름만으로 행동 주체를 바꾸지 말고, 직접 행위자와 관계를 함께 밝히세요.
 탐사 결과를 확인된 매장지나 매장량 발견으로 확대하지 말고, 원문이 확정적으로 표현한 경우에만 `발견`을 사용하세요.
 통제된 보안 시험과 실제 외부 시스템 침해를 구분하고, 시험 환경인지 실제 사고인지 원문 범위를 보존하세요.
 법률·규제 기사는 영향받는 기업·기관·규칙·사건 중 식별 가능한 주체를 제목이나 요약에 명시하세요.
@@ -2651,6 +3115,7 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 새로운 사실이 없는 전망, 칼럼, 비교, 순위, 추천, 사용법, 회고, 단순 해설
 - 생활·상품·자동차 소개와 홍보성 기사
 - 과거 사실만 다시 설명하는 기사
+- 구체적인 새 공격·결정·제재·합의 없이 전황이나 사상자 수만 반복하거나 정치인의 기존 입장과 가능성만 전하는 지정학 기사
 - 주가·코인 가격의 혼조나 등락만 나열한 시황. 단, 같은 기사에서 실적 발표·가이던스 변경·정책 결정 같은 새 원인을 명시하면 그 원인만 선택 가능
 - `적정 가치인가`, `무슨 일이 있나`, `영향은 미미했다`처럼 기자가 기존 사실을 평가하는 기사
 - 증권사 매수·매도 의견, 목표주가, 종목 추천 및 `시장이 말하는 것` 형식의 분석 기사
@@ -2665,6 +3130,7 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 실적 수치가 아직 발표되지 않은 실적 발표 예정·미리보기 기사
 - 대학 캠퍼스 개설, 제재 없는 단순 경고, 계정 차단, 결과나 합의가 없는 회의처럼 경제적 파급력이 작은 단발성 소식
 - 계약·고객·매출·생산·정부 도입처럼 상업적 결과가 확인되지 않은 제품·플랫폼 출시
+- 구속력 있는 계약·발주·투자·상용 도입이 없는 비구속적 업무협약(MOU)
 - 소비자 쇼핑 설문, 가능성만 설명한 보고서, 기업 가이던스가 아닌 일반 수요 전망
 - 개별 소매점의 결제수단 도입, 뚜렷한 새 원인이 없는 2% 안팎의 일반 지수 등락, 비핵심 기관의 경영진 보수 기사
 - 아직 실행되지 않은 시험 일정·장기 목표와 기사 작성일보다 3일 넘게 오래된 사건을 새 후속 사실 없이 다시 소개한 기사
@@ -2741,6 +3207,10 @@ def _quality_repair_prompt(repair_candidates: list[dict]) -> str:
 원문 후보에 없는 사실·숫자·인과관계를 추가하지 마세요.
 원문이 가능성·추정으로 보도한 사건은 제목도 확정형으로 쓰지 마세요.
 원문이 수치로 증가·감소를 보도했다면 핵심 변화 수치 하나 이상을 요약에 포함하세요.
+원문 금액을 임의로 다른 통화로 환산하지 말고, 원문에 함께 나온 통화와 금액만 사용하세요.
+million·billion·trillion이나 M·B·T 단위는 자릿수를 정확히 계산해 자연스러운 한국어 단위로 쓰고 영문 축약을 남기지 마세요.
+직접 행동한 자회사·특수목적법인(SPC)·컨소시엄을 모회사로 바꾸지 말고, 직접 행위자와 관계를 정확히 쓰세요.
+통제된 보안 시험이나 승인된 평가 환경의 관찰 결과를 현실의 해킹·침해 사고로 확대하지 마세요.
 각 항목의 temp_id, source_ref, source_title은 한 글자도 바꾸지 마세요.
 완전히 고칠 수 없는 항목은 결과에서 제외하세요.
 
@@ -2835,14 +3305,22 @@ def _decision_to_item(
         content,
     ):
         return failed("confidence_mismatch")
+    if _overstates_controlled_security_test(articles[temp_id], title, content):
+        return failed("controlled_test_overstated_as_incident")
     if _has_malformed_korean_amount(f"{title} {content}"):
         return failed("malformed_korean_amount")
+    if _has_unsupported_currency_conversion(articles[temp_id], title, content):
+        return failed("unsupported_currency_conversion")
+    if _has_mistranslated_english_large_unit(articles[temp_id], title, content):
+        return failed("mistranslated_large_unit")
     if _title_numbers_missing_from_content(title, content):
         return failed("title_numbers_missing_from_content")
     if not _contains_korean(title) or not _contains_korean(content):
         return failed("not_korean")
     if _has_untranslated_english_prose(title, content):
         return failed("untranslated_english_prose")
+    if _has_unlocalized_financial_or_foreign_notation(title, content):
+        return failed("unlocalized_financial_or_foreign_notation")
     if _has_unexplained_specialist_acronym(title, content):
         return failed("unexplained_specialist_acronym")
     if _has_ambiguous_percentage_growth(content):
@@ -2853,6 +3331,8 @@ def _decision_to_item(
         return failed("misattributed_fund_return")
     if _misstates_primary_transaction_actor(articles[temp_id], title, content):
         return failed("incorrect_primary_transaction_actor")
+    if _misstates_indirect_transaction_actor(articles[temp_id], title):
+        return failed("incorrect_indirect_transaction_actor")
     if _missing_source_geography(articles[temp_id], title, content, category):
         return failed("missing_source_geography")
     if not _is_valid_report_summary(content):

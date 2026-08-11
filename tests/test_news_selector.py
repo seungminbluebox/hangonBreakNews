@@ -2751,6 +2751,13 @@ class NewsSelectorTests(unittest.TestCase):
         )
         self.assertEqual(len(generator.prompts), 2)
         self.assertIn("제목과 요약의 품질 오류만 수정", generator.prompts[1])
+        for required_fragment in (
+            "임의로 다른 통화로 환산",
+            "million·billion·trillion",
+            "직접 행동한 자회사·특수목적법인",
+            "통제된 보안 시험",
+        ):
+            self.assertIn(required_fragment, generator.prompts[1])
 
     def test_selects_article_when_focused_quality_repair_succeeds(self):
         source = article(
@@ -3930,6 +3937,466 @@ class NewsSelectorTests(unittest.TestCase):
             [item["category"] for item in selected],
             ["policy"],
         )
+
+    def test_rejects_currency_conversion_not_present_in_source(self):
+        source = article(
+            "spacex-currency-conversion",
+            "SpaceX shares trade near the $135 issue price",
+            "Shares traded near $135 while 191 million shares remained outstanding.",
+            "https://example.com/spacex-currency-conversion",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="스페이스X 주가, 공모가 135달러 근접",
+                    content="스페이스X 주가가 135달러(191원)에 근접했습니다.",
+                    category="market",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_rejects_million_amount_mistranslated_as_man_unit(self):
+        source = article(
+            "spr-unit-drift",
+            "US strategic petroleum reserve falls to 298.7 million barrels",
+            "The reserve declined to 298.7 million barrels.",
+            "https://example.com/spr-unit-drift",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="미국 전략비축유 298.7만 배럴로 감소",
+                    content="미국 전략비축유가 298.7만 배럴로 감소했습니다.",
+                    category="market",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_rejects_unlocalized_financial_and_foreign_script_fragments(self):
+        sources = [
+            article(
+                "alcon-symbols",
+                "Alcon lowers tariff impact estimate to $40M-$90M",
+                "Alcon lowered its tariff estimate to between $40 million and $90 million.",
+                "https://example.com/alcon-symbols",
+            ),
+            article(
+                "copper-german-fragment",
+                "Copper project moves nearer to a final investment decision",
+                "The company said the project moved nearer to a final investment decision.",
+                "https://example.com/copper-german-fragment",
+            ),
+            article(
+                "ev-cjk-fragment",
+                "New vehicle scrappage scheme begins",
+                "The government introduced a new vehicle scrappage scheme.",
+                "https://example.com/ev-cjk-fragment",
+            ),
+        ]
+        response = json.dumps(
+            [
+                decision_for(
+                    sources[0],
+                    0,
+                    title="알콘, 관세 영향 $40M-$90M로 하향",
+                    content="알콘이 관세 영향 추정치를 $40M-$90M로 낮췄습니다.",
+                ),
+                decision_for(
+                    sources[1],
+                    1,
+                    title="구리 프로젝트, 최종 투자 결정에 접근",
+                    content="구리 프로젝트가 최종 투자 결정에 näher 다가갔습니다.",
+                ),
+                decision_for(
+                    sources[2],
+                    2,
+                    title="정부, 차량 스크래피지制度 도입",
+                    content="정부가 새로운 차량 스크래피지制度를 도입했습니다.",
+                    category="policy",
+                ),
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize(sources, FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_rejects_title_that_replaces_backed_spc_with_parent_company(self):
+        source = article(
+            "kioxia-spc-actor",
+            "SK Hynix-backed SPC2 becomes Kioxia's largest shareholder",
+            "The special-purpose company backed by SK Hynix became Kioxia's largest shareholder.",
+            "https://example.com/kioxia-spc-actor",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="SK하이닉스, 키옥시아 최대주주 지위 확보",
+                    content="SK하이닉스가 투자한 특수목적법인(SPC2)이 키옥시아 최대주주가 됐습니다.",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_excludes_comparisons_guides_routine_filings_and_minor_market_quotes_before_ai(self):
+        rejected = [
+            article(
+                "company-comparison",
+                "TSMC versus ASML: market share and valuation compared",
+                "TSMC has 73% share and ASML has 90% share; no new event was reported.",
+                "https://example.com/company-comparison",
+            ),
+            article(
+                "buyer-guide",
+                "What to consider before buying an electric vehicle",
+                "A guide to charging, range and battery warranties for buyers.",
+                "https://example.com/buyer-guide",
+            ),
+            article(
+                "routine-filing",
+                "BRT Apartments files second-quarter financial statements with SEC",
+                "The company made a routine filing without new earnings metrics.",
+                "https://example.com/routine-filing",
+            ),
+            article(
+                "airport-baggage",
+                "Airport passengers board flights without luggage after baggage failure",
+                "Some passengers arrived without bags; no flights were cancelled.",
+                "https://example.com/airport-baggage",
+            ),
+            article(
+                "cyber-trend",
+                "Cyberattacks evolve toward destructive industrial control systems",
+                "Experts described a broad trend without a new attack, loss or official action.",
+                "https://example.com/cyber-trend",
+            ),
+            article(
+                "minor-futures-move",
+                "S&P 500 futures edge up 0.11% ahead of CPI",
+                "The futures quote moved 0.11% before the scheduled data release.",
+                "https://example.com/minor-futures-move",
+            ),
+            article(
+                "minor-index-move",
+                "KOSPI falls 0.95% as KOSDAQ also weakens",
+                "The indexes declined without a newly reported catalyst.",
+                "https://example.com/minor-index-move",
+            ),
+            article(
+                "daily-mortgage-quote",
+                "US 30-year mortgage rate slips from 6.706% to 6.688%",
+                "The daily average changed without a new central-bank or government action.",
+                "https://example.com/daily-mortgage-quote",
+            ),
+        ]
+        kept = article(
+            "intel-equity-offering",
+            "Intel announces $15 billion equity offering",
+            "Intel announced the offering to fund capital expenditure and working capital.",
+            "https://example.com/intel-equity-offering",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    kept,
+                    8,
+                    title="인텔, 150억 달러 유상증자 발표",
+                    content="인텔이 자본지출 등을 위해 150억 달러 규모 유상증자를 발표했습니다.",
+                )
+            ],
+            ensure_ascii=False,
+        )
+        generator = FakeGenerator(response)
+
+        selected = select_and_summarize([*rejected, kept], generator)
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["intel-equity-offering"],
+        )
+        for source in rejected:
+            self.assertNotIn(source["raw_title"], generator.prompts[0])
+
+    def test_deduplicates_price_updates_from_same_geopolitical_oil_catalyst(self):
+        first = article(
+            "iran-oil-first",
+            "Brent rises to $88.10 after Trump demands compensation from Iran",
+            "Brent rose after the US president demanded war compensation from Iran.",
+            "https://example.com/iran-oil-first",
+        )
+        second = article(
+            "iran-oil-second",
+            "Oil rises to $87.72 on Trump Iran compensation demand",
+            "Crude rose after Trump repeated the compensation demand to Iran.",
+            "https://example.com/iran-oil-second",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    first,
+                    0,
+                    title="트럼프의 이란 보상 요구에 브렌트유 88.1달러",
+                    content="트럼프 미국 대통령의 이란 보상 요구에 브렌트유가 88.1달러로 상승했습니다.",
+                    category="geopolitics",
+                ),
+                decision_for(
+                    second,
+                    1,
+                    title="트럼프의 이란 보상 요구로 원유 87.72달러",
+                    content="트럼프 미국 대통령의 같은 보상 요구로 원유가 87.72달러로 상승했습니다.",
+                    category="geopolitics",
+                ),
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([first, second], FakeGenerator(response))
+
+        self.assertEqual(len(selected), 1)
+
+    def test_drops_price_only_follow_up_for_recent_geopolitical_oil_event(self):
+        source = article(
+            "iran-oil-follow-up",
+            "Oil trades at $87.72 after Trump Iran compensation demand",
+            "The same compensation demand remained the only catalyst for the updated quote.",
+            "https://example.com/iran-oil-follow-up",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="트럼프의 이란 보상 요구로 원유 87.72달러",
+                    content="트럼프 미국 대통령의 기존 보상 요구로 원유가 87.72달러에 거래됐습니다.",
+                    category="geopolitics",
+                    news_type="follow_up",
+                )
+            ],
+            ensure_ascii=False,
+        )
+        recent_news = [
+            {
+                "title": "트럼프의 이란 보상 요구에 브렌트유 88.1달러",
+                "content": "트럼프 미국 대통령의 이란 보상 요구에 브렌트유가 88.1달러로 상승했습니다.",
+            }
+        ]
+
+        selected = select_and_summarize(
+            [source],
+            FakeGenerator(response),
+            recent_news=recent_news,
+        )
+
+        self.assertEqual(selected, [])
+
+    def test_deduplicates_same_company_stock_quote_across_korean_and_english_names(self):
+        first = article(
+            "spacex-quote-first",
+            "SpaceX shares approach the $135 IPO price amid retail selling",
+            "The stock traded near its issue price as retail investors sold shares.",
+            "https://example.com/spacex-quote-first",
+        )
+        second = article(
+            "spacex-quote-second",
+            "SpaceX stock recovers issue price as retail investors sell",
+            "Shares returned to $135 while retail investors remained net sellers.",
+            "https://example.com/spacex-quote-second",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    first,
+                    0,
+                    title="스페이스X 주가, 135달러 공모가 근접",
+                    content="스페이스X 주가가 개인 매도 속에 135달러 공모가에 근접했습니다.",
+                    category="market",
+                ),
+                decision_for(
+                    second,
+                    1,
+                    title="SpaceX, 개인 매도 속 135달러 상장가 회복",
+                    content="SpaceX 주가가 개인 매도 속에 135달러 상장 가격을 회복했습니다.",
+                    category="market",
+                ),
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([first, second], FakeGenerator(response))
+
+        self.assertEqual(len(selected), 1)
+
+    def test_keeps_correctly_named_subsidiary_as_transaction_actor(self):
+        source = article(
+            "mobileye-direct-actor",
+            "Intel subsidiary Mobileye acquires Autobrains",
+            "Mobileye acquired Autobrains in a completed transaction.",
+            "https://example.com/mobileye-direct-actor",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="모빌아이, 오토브레인스 인수",
+                    content="인텔 자회사 모빌아이가 오토브레인스 인수를 완료했습니다.",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(len(selected), 1)
+
+    def test_keeps_3m_company_name_with_localized_financial_amount(self):
+        source = article(
+            "3m-investment",
+            "3M announces $1 billion US factory investment",
+            "3M announced a binding $1 billion factory investment.",
+            "https://example.com/3m-investment",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="3M, 미국 공장에 10억 달러 투자",
+                    content="3M이 미국 공장에 10억 달러를 투자한다고 발표했습니다.",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(len(selected), 1)
+
+    def test_normalizes_confirmed_mixed_language_names_and_oil_route_term(self):
+        source = article(
+            "contact-energy-oil-route",
+            "Contact Energy warns that an oil route remains blocked",
+            "Contact Energy said the blocked oil route affected fuel deliveries.",
+            "https://example.com/contact-energy-oil-route",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="컨택트 에너지, 석유로드 차단 영향 발표",
+                    content="컨택트 에너지가 석유로드 차단으로 연료 공급이 영향을 받았다고 밝혔습니다.",
+                    category="geopolitics",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(
+            selected[0]["normalized_title"],
+            "콘택트 에너지, 원유 운송로 차단 영향 발표",
+        )
+        self.assertEqual(
+            selected[0]["normalized_content"],
+            "콘택트 에너지가 원유 운송로 차단으로 연료 공급이 영향을 받았다고 밝혔습니다.",
+        )
+
+    def test_excludes_nonbinding_mou_founder_profile_and_minor_recall_before_ai(self):
+        rejected = [
+            article(
+                "nonbinding-mou",
+                "Ricoh Hong Kong and Halo Energy sign smart-mobility MOU",
+                "The nonbinding MOU announced a partnership without a contract, order, investment or deployment.",
+                "https://example.com/nonbinding-mou",
+            ),
+            article(
+                "founder-profile",
+                "Founder launches personal-finance platform after family money problems",
+                "The profile describes the founder's mother and the platform without funding, revenue or customers.",
+                "https://example.com/founder-profile",
+            ),
+            article(
+                "minor-food-recall",
+                "Taylor Farms recalls jalapeno products over possible salmonella",
+                "The voluntary product recall reported no illnesses, regulator order or material financial impact.",
+                "https://example.com/minor-food-recall",
+            ),
+        ]
+        kept = article(
+            "major-food-recall",
+            "FDA orders nationwide food recall after 100 hospitalizations",
+            "The regulator ordered a nationwide recall after 100 people were hospitalized.",
+            "https://example.com/major-food-recall",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    kept,
+                    3,
+                    title="미국 FDA, 입원 100명 발생 식품 전국 회수 명령",
+                    content="미국 식품의약국(FDA)이 입원 환자 100명 발생 후 전국적인 식품 회수를 명령했습니다.",
+                    category="policy",
+                    news_type="official_announcement",
+                )
+            ],
+            ensure_ascii=False,
+        )
+        generator = FakeGenerator(response)
+
+        selected = select_and_summarize([*rejected, kept], generator)
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["major-food-recall"],
+        )
+        for source in rejected:
+            self.assertNotIn(source["raw_title"], generator.prompts[0])
+
+    def test_rejects_controlled_security_test_rewritten_as_real_incident(self):
+        source = article(
+            "controlled-ai-security-test",
+            "AI agent reaches external service during controlled security test",
+            "Researchers observed the behavior in an authorized evaluation environment.",
+            "https://example.com/controlled-ai-security-test",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="AI 에이전트, 외부 시스템 침해 사고 발생",
+                    content="AI 에이전트가 보안 시험 중 외부 시스템에 무단 침입해 데이터를 탈취하는 사고가 발생했습니다.",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
 
     def test_response_schema_allows_complete_titles_up_to_fifty_five_characters(self):
         title_schema = NEWS_SELECTION_RESPONSE_FORMAT["json_schema"]["schema"][

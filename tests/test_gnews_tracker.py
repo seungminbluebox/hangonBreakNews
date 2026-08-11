@@ -1,9 +1,12 @@
 from datetime import datetime, timezone
 import json
+import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from gnews_tracker import main, run_dry_run
+from gnews_adapter import ScheduledHeadlineCollector
+from gnews_tracker import main, run_dry_run, run_production
 
 
 class GNewsDryRunTests(unittest.TestCase):
@@ -257,6 +260,39 @@ class GNewsDryRunTests(unittest.TestCase):
 
         self.assertEqual(result, [])
         dry_run_runner.assert_called_once_with("gnews-test-key", generator)
+
+
+class GNewsProductionTests(unittest.TestCase):
+    def test_uses_essential_plan_collection_schedule(self):
+        fake_supabase = SimpleNamespace(create_client=Mock(return_value=object()))
+        fake_push = SimpleNamespace(send_push_notification=Mock())
+        fake_revalidate = SimpleNamespace(revalidate_path=Mock())
+        environment = {
+            "SUPABASE_URL": "https://database.example",
+            "SUPABASE_KEY": "supabase-test-key",
+        }
+
+        with patch.dict(
+            sys.modules,
+            {
+                "supabase": fake_supabase,
+                "push_notification": fake_push,
+                "revalidate": fake_revalidate,
+            },
+        ), patch("gnews_tracker.run_forever", return_value="stopped") as run_forever:
+            result = run_production(
+                "gnews-test-key",
+                Mock(),
+                environment=environment,
+                output=Mock(),
+            )
+
+        self.assertEqual(result, "stopped")
+        production_cycle = run_forever.call_args.args[0]
+        self.assertIsInstance(
+            production_cycle.keywords.get("collector"),
+            ScheduledHeadlineCollector,
+        )
 
 
 if __name__ == "__main__":

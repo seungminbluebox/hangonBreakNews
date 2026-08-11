@@ -14,7 +14,11 @@ import json
 import os
 import time
 
-from gnews_adapter import GNewsClient, collect_default_headlines
+from gnews_adapter import (
+    GNewsClient,
+    ScheduledHeadlineCollector,
+    collect_default_headlines,
+)
 from news_selector import NEWS_SELECTION_RESPONSE_FORMAT, select_and_summarize
 
 
@@ -390,7 +394,10 @@ def run_dry_run(
     batch_size=DEFAULT_AI_BATCH_SIZE,
 ):
     """Fetch once and print fields useful for reviewing source quality."""
-    output("GNews dry run: fetching Korea, US, and world business headlines...")
+    output(
+        "GNews dry run: fetching Korea, US, and world business headlines "
+        "plus world headlines..."
+    )
     client = client_factory(api_key=api_key)
     collected_articles = collector(
         client,
@@ -481,6 +488,7 @@ def run_production(
         repository,
         publisher,
         state,
+        collector=ScheduledHeadlineCollector(),
         output=output,
     )
     return run_forever(

@@ -5,6 +5,7 @@ from unittest.mock import Mock, call
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 
+import gnews_adapter
 from gnews_adapter import GNewsClient, collect_default_headlines, normalize_article
 
 
@@ -341,7 +342,7 @@ class GNewsClientTests(unittest.TestCase):
 
 
 class DefaultFeedCollectionTests(unittest.TestCase):
-    def test_requests_plan_maximum_for_all_scopes_without_adding_api_calls(self):
+    def test_requests_plan_maximum_for_business_scopes_and_world_headlines(self):
         client = Mock()
         client.fetch_top_headlines.return_value = []
         fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
@@ -352,16 +353,16 @@ class DefaultFeedCollectionTests(unittest.TestCase):
             sleeper=Mock(),
         )
 
-        self.assertEqual(client.fetch_top_headlines.call_count, 3)
+        self.assertEqual(client.fetch_top_headlines.call_count, 4)
         self.assertEqual(
             [
                 request.kwargs["max_articles"]
                 for request in client.fetch_top_headlines.call_args_list
             ],
-            [25, 25, 25],
+            [25, 25, 25, 25],
         )
 
-    def test_collects_three_scopes_with_free_plan_delay_and_exact_deduplication(self):
+    def test_collects_business_and_world_feeds_with_delay_and_exact_deduplication(self):
         duplicate = normalized_item(
             "shared-article",
             "kr",
@@ -380,9 +381,16 @@ class DefaultFeedCollectionTests(unittest.TestCase):
             ],
             [
                 normalized_item(
-                    "world-article",
+                    "world-business-article",
                     "world",
-                    "https://example.com/world",
+                    "https://example.com/world-business",
+                )
+            ],
+            [
+                normalized_item(
+                    "geopolitics-article",
+                    "world",
+                    "https://example.com/geopolitics",
                 )
             ],
         ]
@@ -399,7 +407,12 @@ class DefaultFeedCollectionTests(unittest.TestCase):
 
         self.assertEqual(
             [article["provider_article_id"] for article in articles],
-            ["shared-article", "us-article", "world-article"],
+            [
+                "shared-article",
+                "us-article",
+                "world-business-article",
+                "geopolitics-article",
+            ],
         )
         self.assertEqual(
             client.fetch_top_headlines.call_args_list,
@@ -428,9 +441,50 @@ class DefaultFeedCollectionTests(unittest.TestCase):
                     max_articles=10,
                     fetched_at=fetched_at,
                 ),
+                call(
+                    market_scope="world",
+                    country=None,
+                    language="en",
+                    category="world",
+                    max_articles=10,
+                    fetched_at=fetched_at,
+                ),
             ],
         )
-        self.assertEqual(sleeper.call_args_list, [call(1.1), call(1.1)])
+        self.assertEqual(
+            sleeper.call_args_list,
+            [call(1.1), call(1.1), call(1.1)],
+        )
+
+    def test_production_schedule_fetches_world_every_cycle_and_business_every_other_cycle(self):
+        collector_type = getattr(gnews_adapter, "ScheduledHeadlineCollector", None)
+        self.assertIsNotNone(
+            collector_type,
+            "production collector must implement the Essential-plan schedule",
+        )
+        collector = collector_type()
+        client = Mock()
+        client.fetch_top_headlines.return_value = []
+        sleeper = Mock()
+        fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
+
+        collector(client, fetched_at=fetched_at, sleeper=sleeper)
+        collector(client, fetched_at=fetched_at, sleeper=sleeper)
+
+        self.assertEqual(
+            [
+                request.kwargs["category"]
+                for request in client.fetch_top_headlines.call_args_list
+            ],
+            ["business", "business", "business", "world", "world"],
+        )
+        self.assertEqual(
+            [
+                request.kwargs["country"]
+                for request in client.fetch_top_headlines.call_args_list
+            ],
+            ["kr", "us", None, None, None],
+        )
 
 
 if __name__ == "__main__":
