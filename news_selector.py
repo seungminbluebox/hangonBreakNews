@@ -1364,6 +1364,30 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
         value = value.replace("석유로드", "원유 운송로")
     if "contact energy" in source_text:
         value = value.replace("컨택트 에너지", "콘택트 에너지")
+    if "camry" in source_text:
+        value = value.replace("카멜리", "캠리")
+    if "cleveland fed president" in source_text or (
+        "cleveland federal reserve" in source_text and "president" in source_text
+    ):
+        value = value.replace("클리블랜드 연방준비제도장장", "클리블랜드 연은 총재")
+        value = value.replace("연방준비제도장장", "클리블랜드 연은 총재")
+    if "panama-flagged" in source_text or "panamanian-flagged" in source_text:
+        value = value.replace("팬아마 플래그십", "파나마 선적")
+        value = value.replace("파나마 플래그십", "파나마 선적")
+    if "trade deficit" in source_text:
+        value = value.replace("무역수지가", "무역적자가")
+        value = re.sub(r"(\d+개월\s+연속)\s+적자를\s+이어", r"\1 이어", value)
+        value = re.sub(
+            r"(\d+개월\s+연속)\s+이어갔습니다",
+            r"\1 이어졌습니다",
+            value,
+        )
+        value = re.sub(
+            r"무역수지\s+([\d,.]+(?:억|조)?\s*달러)로\s+"
+            r"(\d+개월\s+연속)\s+적자",
+            r"무역적자 \1로 \2 지속",
+            value,
+        )
     if "anglo american" in source_text:
         value = value.replace("앙골라 아메리칸", "앵글로 아메리칸")
         value = value.replace("앵글로우 아메리칸", "앵글로 아메리칸")
@@ -1779,6 +1803,65 @@ def _overstates_controlled_security_test(
     return any(marker in generated_text for marker in overstated_incident_markers)
 
 
+def _misstates_from_to_level_as_change(article: dict, title: str) -> bool:
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    )
+    for match in re.finditer(
+        r"\bfrom\s+(\d+(?:\.\d+)?)%\s+to\s+(\d+(?:\.\d+)?)%",
+        source_text,
+        flags=re.IGNORECASE,
+    ):
+        start = Decimal(match.group(1))
+        end = Decimal(match.group(2))
+        claimed_change = re.search(
+            rf"(?<![\d.]){re.escape(match.group(1))}%\s*(?:이상\s*)?"
+            r"(?:상승|증가|개선)",
+            title,
+        )
+        if claimed_change and abs(end - start) != start:
+            return True
+    return False
+
+
+def _misattributes_metric_percentage(
+    article: dict,
+    title: str,
+    content: str,
+) -> bool:
+    source_text = ". ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    )
+    generated_text = f"{title}. {content}"
+    metric_patterns = (
+        r"\bgdp\s+growth\b",
+        r"\bgross domestic product\s+growth\b",
+        r"GDP\s*성장률",
+        r"국내총생산\s*성장률",
+    )
+
+    def metric_percentages(value: str) -> set[str]:
+        percentages = set()
+        for sentence in re.split(r"(?<=[.!?])\s+|(?<=다\.)", value):
+            if not any(re.search(pattern, sentence, flags=re.IGNORECASE) for pattern in metric_patterns):
+                continue
+            percentages.update(
+                _normalize_number(number)
+                for number in re.findall(r"(\d+(?:\.\d+)?)\s*%", sentence)
+            )
+        return percentages
+
+    source_percentages = metric_percentages(source_text)
+    generated_percentages = metric_percentages(generated_text)
+    return bool(
+        source_percentages
+        and generated_percentages
+        and not generated_percentages.issubset(source_percentages)
+    )
+
+
 def _has_speculative_event_language(value: str) -> bool:
     normalized = value.casefold()
     marker_match = any(
@@ -1812,6 +1895,48 @@ def _has_speculative_event_language(value: str) -> bool:
 def _has_confirmed_systemic_event(source_text: str) -> bool:
     if _has_speculative_event_language(source_text):
         return False
+
+    strategic_shipping_attack = (
+        any(
+            marker in source_text
+            for marker in (
+                "strait of hormuz",
+                "bab el-mandeb",
+                "bab al-mandab",
+                "red sea",
+                "호르무즈 해협",
+                "바브엘만데브",
+                "홍해",
+            )
+        )
+        and any(
+            marker in source_text
+            for marker in (
+                "merchant ship",
+                "commercial vessel",
+                "container ship",
+                "tanker",
+                "상선",
+                "컨테이너선",
+                "유조선",
+            )
+        )
+        and any(
+            marker in source_text
+            for marker in (
+                "missile strike",
+                "missiles strike",
+                "missiles hit",
+                "vessel was hit",
+                "ship was hit",
+                "attacked",
+                "피격",
+                "미사일 공격",
+            )
+        )
+    )
+    if strategic_shipping_attack:
+        return True
 
     confirmed_action = any(
         marker in source_text
@@ -1899,6 +2024,33 @@ def _normalize_importance_score(article: dict, importance_score):
         article.get(field) or ""
         for field in ("raw_title", "raw_description", "raw_content")
     ).casefold()
+    forward_gdp_forecast = (
+        any(
+            marker in source_text
+            for marker in (
+                "gdp growth forecast",
+                "forecasts",
+                "forecast for",
+                "projected gdp growth",
+                "growth projection",
+                "국내총생산 성장률 전망",
+                "gdp 성장률 전망",
+            )
+        )
+        and any(marker in source_text for marker in ("gdp", "gross domestic product", "국내총생산"))
+        and not any(
+            marker in source_text
+            for marker in (
+                "unexpected contraction",
+                "unexpected recession",
+                "emergency revision",
+                "예상 밖 역성장",
+                "긴급 전망 수정",
+            )
+        )
+    )
+    if forward_gdp_forecast:
+        return min(importance_score, 8)
     if importance_score < 9:
         return 9 if _has_confirmed_systemic_event(source_text) else importance_score
     systemic_markers = (
@@ -2118,6 +2270,68 @@ def _normalize_importance_score(article: dict, importance_score):
     ):
         return 8
     return importance_score
+
+
+def _normalize_category(article: dict, category: str) -> str:
+    if category != "geopolitics":
+        return category
+    source_text = " ".join(
+        article.get(field) or ""
+        for field in ("raw_title", "raw_description", "raw_content")
+    ).casefold()
+    geopolitical_markers = (
+        "war",
+        "military",
+        "missile",
+        "airstrike",
+        "invasion",
+        "sanction",
+        "export control",
+        "blockade",
+        "ceasefire",
+        "diplomatic",
+        "peace talks",
+        "assassination threat",
+        "hostage",
+        "전쟁",
+        "군사",
+        "미사일",
+        "공습",
+        "침공",
+        "제재",
+        "수출 통제",
+        "봉쇄",
+        "휴전",
+        "외교",
+        "평화 협상",
+        "암살 위협",
+    )
+    if any(
+        (
+            re.search(rf"\b{re.escape(marker)}\b", source_text)
+            if re.fullmatch(r"[a-z ]+", marker)
+            else marker in source_text
+        )
+        for marker in geopolitical_markers
+    ):
+        return category
+    company_operation_markers = (
+        "internet service",
+        "network outage",
+        "technicians",
+        "electricity utility",
+        "power grid",
+        "grid stability",
+        "service outage",
+        "인터넷 서비스",
+        "통신망",
+        "전력망",
+        "전력 회사",
+        "서비스 중단",
+    )
+    if any(marker in source_text for marker in company_operation_markers):
+        return "corporate"
+    return category
 
 
 def _missing_source_geography(
@@ -3103,8 +3317,10 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 2. 경제 관련성: 경제, 금융시장, 산업, 주요 기업, 규제·정책 또는 경제에 영향을 줄 지정학적 사건과 직접 관련됨.
 
 기업 규모나 지역 범위가 작더라도 주가·재무·고용·산업·규제에 영향을 주는 구체적인 경제 사건이면 7점 후보로 유지하세요.
+기업의 구체적인 리콜, 주요 기업의 공식 제품·기능 공개, 생산·공급·서비스 변화는 영향 범위가 제한적이어도 새로운 기업 소식으로 7점 후보에 포함하세요. 단순 홍보 문구만 있고 무엇이 새로 공개·변경됐는지 불명확하면 제외하세요.
 지정학 기사는 전쟁 발발·확전·휴전, 국가 간 직접 공격, 경제 제재·수출 통제·관세, 에너지 시설·주요 해상 운송로 차질, 시장에 영향을 줄 협상 타결·결렬처럼 새롭고 구체적인 상태 변화가 있으면 선택하세요.
 지정학 사건 자체가 국가·에너지·교역·공급망에 광범위한 영향을 줄 수 있다면 기사에 시장 반응이 아직 적혀 있지 않아도 선택할 수 있습니다. 다만 원문에 없는 경제 영향이나 가격 전망을 요약에 만들어 넣지 마세요.
+새롭게 확인·보도된 과거의 안보 조치는 공개 시점에 새 사실로 취급할 수 있습니다. 특히 현직 국가 지도자에 대한 국가 차원의 위협과 공식 경호 대응은 구체적인 지정학 소식으로 유지하세요.
 원인·행동·대응 주체를 뒤바꾸지 말고, 누가 무엇을 결정했고 누가 반대하거나 대응했는지 원문 관계를 그대로 쓰세요.
 자회사·특수목적법인(SPC)·컨소시엄이 직접 행동한 경우 모회사 이름만으로 행동 주체를 바꾸지 말고, 직접 행위자와 관계를 함께 밝히세요.
 탐사 결과를 확인된 매장지나 매장량 발견으로 확대하지 말고, 원문이 확정적으로 표현한 경우에만 `발견`을 사용하세요.
@@ -3121,19 +3337,19 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 증권사 매수·매도 의견, 목표주가, 종목 추천 및 `시장이 말하는 것` 형식의 분석 기사
 - 공식 통계나 정책 발표가 아닌 설문조사·연구 결과만 소개하는 기사
 - 지난달·지난 분기 사건에 대한 새로운 조치나 결과 없이 관계자의 평가만 추가한 기사
-- 후보 안에 동일 사건을 다룬 기사가 여러 개면 원문 정보가 가장 구체적인 하나만 선택
-- 최근 저장 뉴스와 같은 사건이면 제외. 단, 합의·승인·완료·취소·새 수치처럼 상태가 실제로 달라진 후속 보도는 `follow_up`으로 선택
+- 후보 안에 동일한 사실을 표현만 바꿔 다룬 기사가 여러 개면 원문 정보가 가장 구체적인 하나만 선택
+- 최근 저장 뉴스와 동일한 사실이면 제외. 같은 지역·기업·협상 주제라도 새 요구, 새 발언, 협상 단계 변화, 공격, 합의·승인·완료·취소·새 수치가 있으면 별도의 `follow_up`으로 선택
 - 새 발표나 조치가 없는 업계 전망·역사적 수준 평가, 단순 실험 연구, 개인용 멤버십·혜택 변경
 - 회사 실적·가이던스·시장점유율과 연결되지 않은 개별 상품 판매 기록, 정기 신고·납부 안내, 기업 순위·수상·명단 기사
 - 공항 편의 서비스 도입, 지역 상점 단속, 소비재 연구·생활 정보처럼 금융시장이나 주요 산업에 미치는 영향이 작은 기사
 - 최고경영자·최고재무책임자 교체가 아닌 통상적인 중간관리자 선임 기사
 - 실적 수치가 아직 발표되지 않은 실적 발표 예정·미리보기 기사
 - 대학 캠퍼스 개설, 제재 없는 단순 경고, 계정 차단, 결과나 합의가 없는 회의처럼 경제적 파급력이 작은 단발성 소식
-- 계약·고객·매출·생산·정부 도입처럼 상업적 결과가 확인되지 않은 제품·플랫폼 출시
+- 무엇이 새로 공개됐는지 불명확하고 계약·고객·매출·생산·정부 도입 등 구체성이 없는 홍보성 제품·플랫폼 소개
 - 구속력 있는 계약·발주·투자·상용 도입이 없는 비구속적 업무협약(MOU)
 - 소비자 쇼핑 설문, 가능성만 설명한 보고서, 기업 가이던스가 아닌 일반 수요 전망
 - 개별 소매점의 결제수단 도입, 뚜렷한 새 원인이 없는 2% 안팎의 일반 지수 등락, 비핵심 기관의 경영진 보수 기사
-- 아직 실행되지 않은 시험 일정·장기 목표와 기사 작성일보다 3일 넘게 오래된 사건을 새 후속 사실 없이 다시 소개한 기사
+- 아직 실행되지 않은 시험 일정·장기 목표와 기사 작성일보다 3일 넘게 오래된 사건을 새 후속 사실이나 새 공개 없이 다시 소개한 기사
 - 자산운용사의 투자자 서한·보유종목 평가, 결정되지 않은 서비스·투자수단 검토, 업계 단체의 비구속적 지침
 - 판결·명령 없이 법원이 의문만 표시한 기사, 통상적인 항공 노선·코드셰어 확대, 새 촉매 없는 과거 주가 수익률 재소개
 - 실적·판매·생산·투자 변화 없는 소비재·주류·자동차 신제품 소개
@@ -3165,6 +3381,8 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 - 10점은 세 기준을 모두 충족하며 세계 시장이나 금융시스템에 충격을 줄 수 있는 극히 드문 사건에만 사용하세요.
 - 8점은 주요 기업 실적·산업 변화·정책·규제처럼 영향이 크지만 광범위한 즉시 재평가까지 요구하지 않는 주요 경제 소식입니다.
 - 7점은 의미 있는 새 경제 사실이지만 영향 범위가 제한적인 소식입니다.
+- 통상적인 리콜과 공식 제품·기능 공개는 원칙적으로 7점이며, 단순 미래 GDP 전망과 통상적인 경제 전망은 9~10점을 주지 마세요.
+- 호르무즈·바브엘만데브·홍해 등 핵심 운송로에서 상선 피격과 사망·운항 차질이 확인되면 세계 교역과 에너지 공급에 즉시 영향을 줄 수 있으므로 9점 후보로 평가하세요.
 - 산업 제약·부족·전망·동향을 다룬 폭넓은 분석은 주요 경제 소식으로 남길 수 있지만, 새로 확정된 조치나 즉각적인 시장 충격이 없으면 최대 8점입니다.
 - 일반적인 분기 실적, 단순 지수 최고치, 제품 공개, 결과 없는 회의에는 9~10점을 주지 마세요. 반대로 기업·정책·지정학 등 어떤 종류든 위 세 기준을 충족하면 속보로 평가하세요.
 - 규제안 심사·승인 보류처럼 최종 결정이 아닌 절차와 일반적인 기업 인수·지분 매각은 원칙적으로 최대 8점입니다.
@@ -3172,7 +3390,7 @@ def _selection_prompt(candidates: list[dict], recent_news: list[dict]) -> str:
 분류 기준:
 - `indicator`: 정부·중앙은행·공식기관이 발표한 물가·고용·성장률·생산·소비 등 수치형 경제지표
 - `market`: 주식·채권·외환·원자재·가상자산 시장과 중앙은행 통화정책
-- `geopolitics`: 전쟁·외교·제재·국가 간 갈등
+- `geopolitics`: 전쟁·외교·제재·국가 간 갈등. 국내 절도·통신 장애·기업 전력망 운영 문제는 여기에 넣지 않음
 - `policy`: 법률·세제·정부 정책과 시장·산업·다수 기업 또는 소비자에게 적용되는 규제
 - `corporate`: 기업 실적·인수합병·기술·공급망·소송과 특정 기업만 대상으로 한 규제 집행
 
@@ -3295,6 +3513,7 @@ def _decision_to_item(
 
     title = _normalize_known_korean_terms(articles[temp_id], title.strip())
     content = _normalize_known_korean_terms(articles[temp_id], content.strip())
+    category = _normalize_category(articles[temp_id], category)
     if _has_incomplete_title(title, content):
         return failed("incomplete_title")
     if _has_opposite_title_content_direction(title, content):
@@ -3307,6 +3526,10 @@ def _decision_to_item(
         return failed("confidence_mismatch")
     if _overstates_controlled_security_test(articles[temp_id], title, content):
         return failed("controlled_test_overstated_as_incident")
+    if _misstates_from_to_level_as_change(articles[temp_id], title):
+        return failed("level_rewritten_as_change_amount")
+    if _misattributes_metric_percentage(articles[temp_id], title, content):
+        return failed("metric_percentage_misattribution")
     if _has_malformed_korean_amount(f"{title} {content}"):
         return failed("malformed_korean_amount")
     if _has_unsupported_currency_conversion(articles[temp_id], title, content):

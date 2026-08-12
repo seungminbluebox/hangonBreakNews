@@ -4398,6 +4398,353 @@ class NewsSelectorTests(unittest.TestCase):
 
         self.assertEqual(selected, [])
 
+    def test_prompt_keeps_concrete_recall_product_feature_and_new_security_disclosure(self):
+        recall = article(
+            "toyota-camry-recall",
+            "Toyota recalls 11,159 Camry vehicles in Canada",
+            "Toyota recalled the vehicles over a display defect.",
+            "https://example.com/toyota-camry-recall",
+        )
+        product_feature = article(
+            "tesla-cybercab-starlink",
+            "Tesla unveils first Cybercab with integrated Starlink",
+            "Tesla officially revealed the new connectivity feature.",
+            "https://example.com/tesla-cybercab-starlink",
+        )
+        security_disclosure = article(
+            "trump-iran-security-flight",
+            "Trump used secret military aircraft after Iran assassination threat",
+            "The previously undisclosed presidential security response was newly reported.",
+            "https://example.com/trump-iran-security-flight",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    recall,
+                    0,
+                    title="토요타, 캐나다서 캠리 11,159대 리콜",
+                    content="토요타가 디스플레이 결함으로 캐나다에서 캠리 11,159대를 리콜했습니다.",
+                ),
+                decision_for(
+                    product_feature,
+                    1,
+                    title="테슬라, 스타링크 탑재 사이버캡 공개",
+                    content="테슬라가 스타링크 연결 기능을 탑재한 사이버캡을 공식 공개했습니다.",
+                ),
+                decision_for(
+                    security_disclosure,
+                    2,
+                    title="트럼프, 이란 위협에 비밀 군용기 이용",
+                    content="트럼프 미국 대통령이 이란의 암살 위협에 대응해 비밀 군용기를 이용한 사실이 새로 공개됐습니다.",
+                    category="geopolitics",
+                ),
+            ],
+            ensure_ascii=False,
+        )
+
+        class PolicyAwareGenerator:
+            def __init__(self):
+                self.prompts = []
+
+            def __call__(self, prompt):
+                self.prompts.append(prompt)
+                required = (
+                    "구체적인 리콜",
+                    "공식 제품·기능 공개",
+                    "새롭게 확인·보도된 과거의 안보 조치",
+                )
+                return SimpleNamespace(
+                    text=response if all(fragment in prompt for fragment in required) else "[]"
+                )
+
+        selected = select_and_summarize(
+            [recall, product_feature, security_disclosure],
+            PolicyAwareGenerator(),
+        )
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            [
+                "toyota-camry-recall",
+                "tesla-cybercab-starlink",
+                "trump-iran-security-flight",
+            ],
+        )
+
+    def test_caps_forward_gdp_forecast_below_breaking(self):
+        source = article(
+            "seychelles-gdp-forecast",
+            "Seychelles forecasts 3.4% GDP growth for 2027",
+            "The government published a forward economic growth forecast.",
+            "https://example.com/seychelles-gdp-forecast",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="세이셸, 2027년 GDP 성장률 3.4% 전망",
+                    content="세이셸 정부가 2027년 국내총생산 성장률을 3.4%로 전망했습니다.",
+                    importance_score=9,
+                    category="indicator",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["importance_score"], 8)
+
+    def test_upgrades_confirmed_attack_on_merchant_ship_in_strategic_waterway(self):
+        source = article(
+            "red-sea-merchant-attack",
+            "Houthi missiles strike merchant ship in Bab el-Mandeb, killing four",
+            "Authorities confirmed three ballistic missiles hit the commercial vessel.",
+            "https://example.com/red-sea-merchant-attack",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="바브엘만데브 해협 상선 피격으로 4명 사망",
+                    content="후티 반군의 탄도미사일이 바브엘만데브 해협의 상선을 타격해 4명이 사망했습니다.",
+                    importance_score=8,
+                    category="geopolitics",
+                    news_type="breaking",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["importance_score"], 9)
+
+    def test_reclassifies_domestic_company_operations_out_of_geopolitics(self):
+        outage = article(
+            "calgary-copper-theft-outage",
+            "Copper theft attempt disrupts Rogers internet service in Calgary",
+            "Rogers technicians were repairing the damaged network.",
+            "https://example.com/calgary-copper-theft-outage",
+        )
+        grid = article(
+            "kenya-power-grid",
+            "Kenya Power warns variable renewable energy is straining the grid",
+            "The electricity utility said wind and solar exceeded 20% of supply.",
+            "https://example.com/kenya-power-grid",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    outage,
+                    0,
+                    title="캘거리 구리 절도 시도로 인터넷 서비스 중단",
+                    content="구리 절도 시도로 로저스의 캘거리 일부 인터넷 서비스가 중단됐습니다.",
+                    category="geopolitics",
+                ),
+                decision_for(
+                    grid,
+                    1,
+                    title="케냐전력, 재생에너지 증가로 전력망 불안 우려",
+                    content="케냐전력은 풍력과 태양광 비중이 20%를 넘으며 전력망 안정성이 영향을 받고 있다고 밝혔습니다.",
+                    category="geopolitics",
+                ),
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([outage, grid], FakeGenerator(response))
+
+        self.assertEqual([item["category"] for item in selected], ["corporate", "corporate"])
+
+    def test_keeps_distinct_hormuz_negotiation_developments(self):
+        articles = [
+            article(
+                "hormuz-concessions",
+                "Iran demands more US concessions to reopen Strait of Hormuz",
+                "Iran made a new demand while vessel traffic remained low.",
+                "https://example.com/hormuz-concessions",
+            ),
+            article(
+                "hormuz-technical-phase",
+                "Iran and Oman reach technical phase in Hormuz reopening talks",
+                "The negotiations moved into technical discussions over shipping routes.",
+                "https://example.com/hormuz-technical-phase",
+            ),
+            article(
+                "hormuz-us-compensation",
+                "Trump says US will also seek compensation in Iran talks",
+                "The US president introduced a separate American compensation demand.",
+                "https://example.com/hormuz-us-compensation",
+            ),
+        ]
+        response = json.dumps(
+            [
+                decision_for(
+                    articles[0],
+                    0,
+                    title="이란, 호르무즈 재개 조건으로 미국에 추가 양보 요구",
+                    content="이란이 호르무즈 해협 통행 재개 조건으로 미국에 추가 양보를 요구했습니다.",
+                    category="geopolitics",
+                    news_type="follow_up",
+                ),
+                decision_for(
+                    articles[1],
+                    1,
+                    title="이란·오만, 호르무즈 재개 협상 기술 단계 진입",
+                    content="이란과 오만의 호르무즈 해협 재개 협상이 운송 경로를 논의하는 기술 단계에 진입했습니다.",
+                    category="geopolitics",
+                    news_type="follow_up",
+                ),
+                decision_for(
+                    articles[2],
+                    2,
+                    title="트럼프, 호르무즈 협상에서 미국도 보상 요구",
+                    content="트럼프 미국 대통령이 이란과의 협상에서 미국도 보상을 요구하겠다고 밝혔습니다.",
+                    category="geopolitics",
+                    news_type="follow_up",
+                ),
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize(articles, FakeGenerator(response))
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            [
+                "hormuz-concessions",
+                "hormuz-technical-phase",
+                "hormuz-us-compensation",
+            ],
+        )
+
+    def test_normalizes_confirmed_fed_camry_flagged_ship_and_trade_deficit_terms(self):
+        articles = [
+            article(
+                "cleveland-fed-hammack",
+                "Cleveland Fed President Hammack says another rate increase may be needed",
+                "The regional Federal Reserve Bank president discussed inflation policy.",
+                "https://example.com/cleveland-fed-hammack",
+            ),
+            article(
+                "toyota-camry-spelling",
+                "Toyota recalls 11,159 Camry vehicles in Canada",
+                "The automaker announced the recall over a display defect.",
+                "https://example.com/toyota-camry-spelling",
+            ),
+            article(
+                "panama-flagged-vessel",
+                "Panama-flagged container ship attacked near Strait of Hormuz",
+                "The vessel was hit by a missile in waters near Pakistan.",
+                "https://example.com/panama-flagged-vessel",
+            ),
+            article(
+                "us-trade-deficit",
+                "US trade deficit reaches $109.26 billion for fourth month",
+                "The trade deficit remained in deficit for a fourth consecutive month.",
+                "https://example.com/us-trade-deficit",
+            ),
+        ]
+        response = json.dumps(
+            [
+                decision_for(
+                    articles[0],
+                    0,
+                    title="연방준비제도장장 하마크, 추가 금리 인상 필요성 강조",
+                    content="클리블랜드 연방준비제도장장 하마크가 물가 대응을 위해 추가 금리 인상이 필요할 수 있다고 밝혔습니다.",
+                    category="market",
+                ),
+                decision_for(
+                    articles[1],
+                    1,
+                    title="토요타, 캐나다 카멜리 11,159대 리콜",
+                    content="토요타가 디스플레이 결함으로 캐나다에서 카멜리 11,159대를 리콜했습니다.",
+                ),
+                decision_for(
+                    articles[2],
+                    2,
+                    title="호르무즈 인근에서 팬아마 플래그십 컨테이너선 피격",
+                    content="팬아마 플래그십 컨테이너선이 호르무즈 해협 인근에서 미사일 공격을 받았습니다.",
+                    category="geopolitics",
+                ),
+                decision_for(
+                    articles[3],
+                    3,
+                    title="미국 무역수지 1,092.6억 달러로 4개월 연속 적자",
+                    content="미국 무역수지가 1,092.6억 달러를 기록하며 4개월 연속 적자를 이어갔습니다.",
+                    category="indicator",
+                ),
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize(articles, FakeGenerator(response))
+
+        self.assertEqual(
+            [item["normalized_title"] for item in selected],
+            [
+                "클리블랜드 연은 총재 하마크, 추가 금리 인상 필요성 강조",
+                "토요타, 캐나다 캠리 11,159대 리콜",
+                "호르무즈 인근에서 파나마 선적 컨테이너선 피격",
+                "미국 무역적자 1,092.6억 달러로 4개월 연속 지속",
+            ],
+        )
+        self.assertEqual(
+            selected[3]["normalized_content"],
+            "미국 무역적자가 1,092.6억 달러를 기록하며 4개월 연속 이어졌습니다.",
+        )
+
+    def test_rejects_from_to_level_rewritten_as_change_amount(self):
+        source = article(
+            "ai-margin-levels",
+            "AI adopters report operating margins rising from 1.50% to 1.80%",
+            "The survey reported the two margin levels, not a 1.5 percentage-point increase.",
+            "https://example.com/ai-margin-levels",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="AI 도입 기업, 영업이익률 1.50% 이상 상승",
+                    content="AI 도입 기업의 평균 영업이익률이 1.50%에서 1.80%로 높아졌습니다.",
+                    category="market",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
+    def test_rejects_number_borrowed_from_different_metric(self):
+        source = article(
+            "bok-cross-metric",
+            "Bank of Korea official cites debt ratio and GDP growth figures",
+            "The household debt ratio rose 17.1%. The GDP growth forecast is 1.7%.",
+            "https://example.com/bok-cross-metric",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="한은, 추가 기준금리 인상 가능성 시사",
+                    content="한국은행 관계자가 17.1%의 GDP 성장률을 근거로 추가 금리 인상 가능성을 언급했습니다.",
+                    category="market",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected, [])
+
     def test_response_schema_allows_complete_titles_up_to_fifty_five_characters(self):
         title_schema = NEWS_SELECTION_RESPONSE_FORMAT["json_schema"]["schema"][
             "items"
