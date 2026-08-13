@@ -1,8 +1,8 @@
 """Production GNews collector and safe one-shot preview.
 
-The production worker keeps the existing ``breaking_news`` table contract.
-Provider metadata remains in memory for filtering and is not mixed into the
-user-facing title or summary.
+The production worker preserves the existing public ``breaking_news``
+contract while storing the provider body in a private column. Provider
+metadata is not mixed into the user-facing title or summary.
 """
 
 import argparse
@@ -89,13 +89,20 @@ def normalize_importance(value) -> int:
 
 
 def to_breaking_news_row(news_item: dict) -> dict:
-    """Map one selected article to the existing frontend-facing DB schema."""
+    """Map one selected article to the existing breaking_news DB schema."""
+    raw_content = news_item.get("raw_content")
+    source_content = (
+        raw_content
+        if isinstance(raw_content, str) and raw_content.strip()
+        else None
+    )
     return {
         "title": news_item["normalized_title"],
         "content": news_item["normalized_content"],
         "importance_score": normalize_importance(news_item["importance_score"]),
         "category": news_item["category"],
         "original_url": news_item["original_url"],
+        "source_content": source_content,
     }
 
 

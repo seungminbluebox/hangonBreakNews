@@ -168,6 +168,26 @@ class GNewsCycleTests(unittest.TestCase):
             ],
         )
 
+    def test_cycle_logs_do_not_expose_source_content(self):
+        source = article()
+        source["raw_content"] = "PRIVATE SOURCE BODY MUST NOT BE LOGGED"
+        outputs = []
+
+        run_cycle(
+            object(),
+            Mock(),
+            FakeRepository(),
+            Mock(),
+            TrackerState(),
+            collector=Mock(return_value=[source]),
+            selector=Mock(return_value=[selected(source)]),
+            clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+            sleeper=Mock(),
+            output=outputs.append,
+        )
+
+        self.assertNotIn(source["raw_content"], "\n".join(outputs))
+
     def test_skips_exact_url_already_saved_in_breaking_news(self):
         duplicate = article()
         repository = FakeRepository(existing_urls=[duplicate["original_url"]])
@@ -487,8 +507,11 @@ class ExistingContractTests(unittest.TestCase):
         query.order.assert_called_once_with("created_at", desc=True)
         query.limit.assert_called_once_with(100)
 
-    def test_maps_selected_article_to_existing_breaking_news_columns_only(self):
-        row = to_breaking_news_row(selected(article(), score=9))
+    def test_maps_raw_content_to_private_source_content_without_changing_content(self):
+        source = article()
+        source["raw_content"] = "  Exact provider body\nsecond line  "
+
+        row = to_breaking_news_row(selected(source, score=9))
 
         self.assertEqual(
             row,
@@ -498,8 +521,35 @@ class ExistingContractTests(unittest.TestCase):
                 "importance_score": 9,
                 "category": "indicator",
                 "original_url": "https://example.com/article-1",
+                "source_content": "  Exact provider body\nsecond line  ",
             },
         )
+
+    def test_maps_absent_raw_content_to_null_source_content(self):
+        source = article()
+        source.pop("raw_content")
+
+        row = to_breaking_news_row(selected(source))
+
+        self.assertIsNone(row["source_content"])
+
+    def test_maps_missing_raw_content_to_null_source_content(self):
+        source = article()
+        source["raw_content"] = None
+        item = selected(source)
+
+        row = to_breaking_news_row(item)
+
+        self.assertIsNone(row["source_content"])
+        self.assertEqual(row["content"], item["normalized_content"])
+
+    def test_maps_whitespace_raw_content_to_null_source_content(self):
+        source = article()
+        source["raw_content"] = " \t\r\n "
+
+        row = to_breaking_news_row(selected(source))
+
+        self.assertIsNone(row["source_content"])
 
     def test_maps_policy_category_to_existing_breaking_news_row(self):
         item = selected(article())
@@ -510,8 +560,50 @@ class ExistingContractTests(unittest.TestCase):
         self.assertEqual(row["category"], "policy")
         self.assertEqual(
             set(row),
-            {"title", "content", "importance_score", "category", "original_url"},
+            {
+                "title",
+                "content",
+                "importance_score",
+                "category",
+                "original_url",
+                "source_content",
+            },
         )
+
+    def test_repository_keeps_exact_url_check_and_inserts_private_source_content(self):
+        duplicate_query = Mock()
+        duplicate_query.select.return_value = duplicate_query
+        duplicate_query.in_.return_value = duplicate_query
+        duplicate_query.execute.return_value = Mock(data=[])
+        insert_query = Mock()
+        insert_query.insert.return_value = insert_query
+        insert_query.execute.return_value = Mock(data=[])
+        client = Mock()
+        client.table.side_effect = [duplicate_query, insert_query]
+        repository = SupabaseBreakingNewsRepository(client)
+        item = selected(article(), score=9)
+
+        self.assertTrue(repository.save(item))
+
+        duplicate_query.select.assert_called_once_with("original_url")
+        duplicate_query.in_.assert_called_once_with(
+            "original_url",
+            [item["original_url"]],
+        )
+        insert_query.insert.assert_called_once_with(to_breaking_news_row(item))
+        self.assertEqual(
+            insert_query.insert.call_args.args[0]["source_content"],
+            item["raw_content"],
+        )
+
+    def test_push_payload_does_not_expose_source_content(self):
+        item = selected(article())
+        item["raw_content"] = "PRIVATE SOURCE BODY MUST NOT LEAVE THE SERVER"
+        push = Mock()
+
+        publish_breaking_news(item, revalidate=Mock(), push=push)
+
+        self.assertNotIn(item["raw_content"], repr(push.call_args))
 
     def test_regular_news_targets_realtime_news_subscribers(self):
         for score in (7, 8):

@@ -91,7 +91,9 @@ class GNewsDryRunTests(unittest.TestCase):
         self.assertIn("fetching", outputs[0])
         self.assertIn("fetched=1", outputs[1])
         self.assertIn("미국 경제 새 소식", outputs[-1])
-        self.assertNotIn("private-test-key", "\n".join(outputs))
+        all_output = "\n".join(outputs)
+        self.assertNotIn("private-test-key", all_output)
+        self.assertNotIn(article["raw_content"], all_output)
         outputs[-1].encode("utf-8")
 
     def test_dry_run_keeps_later_batch_results_when_one_ai_batch_fails(self):

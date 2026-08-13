@@ -126,7 +126,8 @@ df -h
 
 - **프로세스 명칭**: 기존 `tracker`는 `breaking-news`로 이름이 변경되었습니다-
 - **실행 파일**: `gnews_tracker.py`가 운영 파일이며 기본 5분 주기로 실행됩니다. `breaking_tracker.py`는 롤백용으로만 남겨 둡니다.
-- **DB 호환성**: 기존 `breaking_news` 테이블과 `title`, `content`, `importance_score`, `category`, `original_url` 저장 계약을 그대로 사용합니다. 새 테이블이나 정기 SQL 마이그레이션은 없습니다.
+- **DB compatibility**: Existing public fields keep their meaning. New collections additionally require nullable `source_content`; `content` remains the normalized user-facing summary.
+- **Source-content deployment**: Apply the privacy prerequisite and migration in [docs/breaking-news-source-content-deployment.md](docs/breaking-news-source-content-deployment.md) before restarting `gnews_tracker.py`.
 - **카테고리**: `market`, `indicator`, `geopolitics`, `corporate`에 `policy`가 추가됐습니다. `policy`는 법률·세제·정부 정책과 시장·산업·다수 기업 또는 소비자에게 적용되는 규제이며, 특정 기업만 대상으로 한 규제 집행은 `corporate`입니다.
 - **배포 전 DB 확인**: 이 저장소에는 `category` CHECK 제약 마이그레이션이 없습니다. 운영 DB에서 아래 쿼리로 제약을 확인하고, 허용값이 고정돼 있으면 `policy`를 추가하는 별도 검토된 마이그레이션을 먼저 적용하세요.
 
