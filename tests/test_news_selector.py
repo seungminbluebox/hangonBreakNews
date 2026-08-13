@@ -129,8 +129,42 @@ class NewsSelectorTests(unittest.TestCase):
             "A comparison of valuations and past performance.",
             generator.prompts[0],
         )
-        self.assertIn("110자 이내", generator.prompts[0])
-        self.assertIn("원문에 없는 전망·인과관계", generator.prompts[0])
+        self.assertIn("no more than 110 Korean characters", generator.prompts[0])
+        self.assertIn("Do not invent forecasts, causal claims", generator.prompts[0])
+
+    def test_selection_prompt_uses_english_controls_and_requires_korean_output(self):
+        generator = FakeGenerator("[]")
+
+        select_and_summarize(
+            [
+                article(
+                    "prompt-contract",
+                    "Company reports a concrete new investment",
+                    "The company announced a binding factory investment.",
+                    "https://example.com/prompt-contract",
+                )
+            ],
+            generator,
+        )
+
+        prompt = " ".join(generator.prompts[0].split())
+        for required_fragment in (
+            "Write title, content, and selection_reason in natural Korean only",
+            "DIRECT ECONOMIC RELEVANCE",
+            "local crime, ceremonial events, awards, routine visits",
+            "small community grants",
+            "vague regional roundups",
+            "regardless of company or country size",
+            "actor, country, direction, currency, unit, and time basis",
+            "Do not convert currencies",
+            "Do not guess missing geography",
+            "too broken or ambiguous to translate faithfully",
+            "Scores 9-10 are reserved",
+            "must remain at 7-8",
+            "new casualty count, confirmed decision, revised statistic",
+            "separate follow_up",
+        ):
+            self.assertIn(required_fragment, prompt)
 
     def test_accepts_json_wrapped_in_a_markdown_code_fence(self):
         generator = FakeGenerator("```json\n[]\n```")
@@ -187,8 +221,9 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["normalized_title"], "기준금리 동결 🏦")
         self.assertEqual(len(generator.prompts), 2)
-        self.assertIn("JSON 문법만 수정", generator.prompts[1])
-        self.assertIn("원문 후보의 사실을 추가하거나 변경하지 마세요", generator.prompts[1])
+        self.assertIn("Repair JSON syntax only", generator.prompts[1])
+        self.assertIn("Do not add, remove, or change any news facts", generator.prompts[1])
+        self.assertIn("Preserve Korean string values", generator.prompts[1])
 
     def test_restarts_selection_once_when_json_repair_also_fails(self):
         generator = FakeGenerator(
@@ -228,7 +263,7 @@ class NewsSelectorTests(unittest.TestCase):
             ["rate-retry"],
         )
         self.assertEqual(len(generator.prompts), 3)
-        self.assertIn("JSON 문법만 수정", generator.prompts[1])
+        self.assertIn("Repair JSON syntax only", generator.prompts[1])
         self.assertIn("Central bank announces rate decision", generator.prompts[2])
 
     def test_splits_large_candidate_sets_into_ten_article_batches(self):
@@ -1410,9 +1445,9 @@ class NewsSelectorTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("기존 금리 발표", generator.prompts[0])
-        self.assertIn("중복 비교", generator.prompts[0])
-        self.assertIn("사실 근거로 사용하지", generator.prompts[0])
+        self.assertIn("RECENT 24-HOUR NEWS - DUPLICATE COMPARISON ONLY", generator.prompts[0])
+        self.assertIn("Use recent news only for duplicate comparison", generator.prompts[0])
+        self.assertIn("never as a factual source", generator.prompts[0])
 
     def test_deduplicates_against_recent_item_beyond_ai_prompt_context(self):
         source = article(
@@ -2750,14 +2785,19 @@ class NewsSelectorTests(unittest.TestCase):
             frozenset({source["original_url"]}),
         )
         self.assertEqual(len(generator.prompts), 2)
-        self.assertIn("제목과 요약의 품질 오류만 수정", generator.prompts[1])
+        repair_prompt = " ".join(generator.prompts[1].split())
+        self.assertIn("Correct only the title and summary quality errors", repair_prompt)
         for required_fragment in (
-            "임의로 다른 통화로 환산",
-            "million·billion·trillion",
-            "직접 행동한 자회사·특수목적법인",
-            "통제된 보안 시험",
+            "Do not reconsider whether the article should be selected",
+            "Write title, content, and selection_reason in natural Korean only",
+            "Do not convert currencies",
+            "million, billion, trillion, M, B, or T",
+            "subsidiary, special-purpose vehicle (SPV), or consortium",
+            "controlled security test",
+            "actor, country, direction, currency, unit, metric, and time basis",
+            "If a faithful repair is impossible, omit the item",
         ):
-            self.assertIn(required_fragment, generator.prompts[1])
+            self.assertIn(required_fragment, repair_prompt)
 
     def test_selects_article_when_focused_quality_repair_succeeds(self):
         source = article(
@@ -3320,17 +3360,18 @@ class NewsSelectorTests(unittest.TestCase):
 
             def __call__(self, prompt):
                 self.prompts.append(prompt)
+                normalized_prompt = " ".join(prompt.split())
                 required_fragments = (
-                    "구체적인 경제 사건이면 7점 후보",
-                    "원인·행동·대응 주체",
-                    "탐사 결과를 확인된 매장지",
-                    "통제된 보안 시험과 실제 외부 시스템 침해",
-                    "영향받는 기업·기관·규칙·사건",
-                    "제목의 모든 핵심 숫자를 본문에도",
-                    "가급적 35자, 완결성을 위해 최대 55자",
+                    'regardless of company or country size',
+                    'Preserve the source-backed actor',
+                    'exploration results into confirmed reserves',
+                    'controlled security test or authorized evaluation',
+                    'affected rule',
+                    'Keep every important title number in the content',
+                    'ideally <=35 characters and never >55',
                 )
                 text = response if all(
-                    fragment in prompt for fragment in required_fragments
+                    fragment in normalized_prompt for fragment in required_fragments
                 ) else "[]"
                 return SimpleNamespace(text=text)
 
@@ -3457,13 +3498,13 @@ class NewsSelectorTests(unittest.TestCase):
         select_and_summarize([source], generator)
 
         prompt = generator.prompts[0]
-        self.assertIn("정중한 보고체", prompt)
+        self.assertIn("polite news-reporting ending", prompt)
         self.assertIn("TEXT_TOO_SHORT", prompt)
-        self.assertIn("시장 영향:", prompt)
-        self.assertIn("7~8", prompt)
-        self.assertIn("주요 경제 소식", prompt)
-        self.assertIn("9~10", prompt)
-        self.assertIn("긴급 속보", prompt)
+        self.assertIn('"market impact"', prompt)
+        self.assertIn("7: meaningful new economic information", prompt)
+        self.assertIn("8: a major company result", prompt)
+        self.assertIn("Scores 9-10 are reserved", prompt)
+        self.assertIn("confirmed, time-sensitive events", prompt)
 
     def test_allows_calendar_date_from_published_at(self):
         source = article(
@@ -3923,8 +3964,8 @@ class NewsSelectorTests(unittest.TestCase):
             def __call__(self, prompt):
                 self.prompts.append(prompt)
                 required_fragments = (
-                    "`policy`",
-                    "특정 기업만 대상으로 한",
+                    '"policy": laws, tax, government policy',
+                    'enforcement aimed at one specific company',
                 )
                 text = response if all(
                     fragment in prompt for fragment in required_fragments
@@ -4449,9 +4490,9 @@ class NewsSelectorTests(unittest.TestCase):
             def __call__(self, prompt):
                 self.prompts.append(prompt)
                 required = (
-                    "구체적인 리콜",
-                    "공식 제품·기능 공개",
-                    "새롭게 확인·보도된 과거의 안보 조치",
+                    'A specific recall',
+                    'official product or feature release',
+                    'previously undisclosed security response',
                 )
                 return SimpleNamespace(
                     text=response if all(fragment in prompt for fragment in required) else "[]"

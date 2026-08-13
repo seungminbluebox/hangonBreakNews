@@ -3,11 +3,16 @@
 ## Goal
 
 Improve the economic relevance, Korean summary quality, and urgency labeling of
-GNews selections by changing only the existing AI selection and repair prompts.
+GNews selections by changing only the instructions sent to the AI.
 
 ## Scope
 
-- Change prompt wording in `news_selector.py` only.
+- Write all AI control instructions in English: initial selection, JSON syntax
+  repair, and focused quality repair.
+- Keep provider article data in its original language and require only the
+  output values `title`, `content`, and `selection_reason` to be natural Korean.
+- Keep JSON keys, enum values, identifiers, and copied `source_title` in their
+  existing machine-facing form.
 - Keep GNews collection requests, schedule, batch size, and AI call flow unchanged.
 - Keep deterministic filters, validators, importance normalization, categories,
   database schema, notifications, and frontend contracts unchanged.
@@ -43,6 +48,9 @@ an economic impact that is absent from the provider text.
   guessing.
 - Exclude a candidate when the available provider text is too broken or
   ambiguous to produce a faithful Korean title and summary.
+- English instructions must state that Korean output is mandatory and that
+  English prose may appear only where it is part of a proper noun with no safe
+  Korean rendering.
 
 ## Urgency guidance
 
@@ -74,3 +82,5 @@ Prompt contract tests will verify that:
 6. material follow-ups remain eligible as separate articles;
 7. no request, schedule, schema, notification, or deterministic deduplication
    behavior changes.
+8. selection, JSON repair, and focused quality-repair instructions are English,
+   while user-facing output values are explicitly required to be Korean.
