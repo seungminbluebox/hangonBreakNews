@@ -92,8 +92,6 @@ OBVIOUS_ANALYSIS_TITLE_PHRASES = (
     "what the market is saying",
     "says buy",
     "time to sell",
-    "study finds",
-    "survey finds",
     "price target",
     "stock picks",
     "bullish turn",
@@ -104,7 +102,6 @@ OBVIOUS_ANALYSIS_TITLE_PHRASES = (
     "may offer some protection",
     "investing lessons",
     "the effect of",
-    "consortium study",
     "ahead of",
     "외환-마감",
     "지난달",
@@ -913,6 +910,28 @@ def _is_low_value_item(article: dict) -> bool:
         )
     ):
         return True
+    if (
+        any(marker in text for marker in ("study", "survey", "poll"))
+        and any(
+            marker in text
+            for marker in ("workplace", "employee preference", "want promotions", "management")
+        )
+        and not any(
+            marker in text
+            for marker in (
+                "labor market",
+                "job search",
+                "unemployment",
+                "employment rate",
+                "wage growth",
+                "hiring",
+                "layoffs",
+            )
+        )
+        and not material_company_context
+    ):
+        return True
+
     if (
         any(marker in text for marker in ("survey", "poll"))
         and any(marker in text for marker in ("consumer", "shopper", "respondent"))
@@ -1893,8 +1912,6 @@ def _has_speculative_event_language(value: str) -> bool:
 
 
 def _has_confirmed_systemic_event(source_text: str) -> bool:
-    if _has_speculative_event_language(source_text):
-        return False
 
     strategic_shipping_attack = (
         any(
@@ -1937,6 +1954,10 @@ def _has_confirmed_systemic_event(source_text: str) -> bool:
     )
     if strategic_shipping_attack:
         return True
+    if _has_speculative_event_language(source_text):
+        return False
+
+
 
     confirmed_action = any(
         marker in source_text
@@ -2018,12 +2039,69 @@ def _has_confirmed_systemic_event(source_text: str) -> bool:
     )
 
 
+def _is_non_breaking_information_item(source_text: str) -> bool:
+    confirmed_systemic_event = _has_confirmed_systemic_event(source_text)
+    research_or_study = bool(
+        re.search(r"\b(?:study|studies|research|survey|poll)\b", source_text)
+    )
+    routine_insider_trade = (
+        any(
+            marker in source_text
+            for marker in (
+                "insider sale",
+                "insider transaction",
+                "sells shares",
+                "sold shares",
+                "share sale by",
+            )
+        )
+        and any(
+            marker in source_text
+            for marker in ("ceo", "chief executive", "executive", "director", "officer")
+        )
+    )
+    scheduled_announcement = any(
+        marker in source_text
+        for marker in (
+            "will announce",
+            "will be announced",
+            "plans to announce",
+            "will unveil",
+            "will be unveiled",
+            "planned announcement",
+        )
+    )
+    commentary = any(
+        marker in source_text
+        for marker in ("opinion", "commentary", "editorial", "analysis says")
+    )
+    unrealized_threat = any(
+        marker in source_text
+        for marker in ("threatens", "threatened", "warns", "warning", "vows")
+    ) and not confirmed_systemic_event
+    speculative_information = (
+        _has_speculative_event_language(source_text) and not confirmed_systemic_event
+    )
+    return any(
+        (
+            research_or_study,
+            routine_insider_trade,
+            scheduled_announcement,
+            commentary,
+            speculative_information,
+            unrealized_threat,
+        )
+    )
+
 def _normalize_importance_score(article: dict, importance_score):
 
     source_text = " ".join(
         article.get(field) or ""
         for field in ("raw_title", "raw_description", "raw_content")
     ).casefold()
+    if importance_score >= 9 and _is_non_breaking_information_item(source_text):
+        return 8
+
     forward_gdp_forecast = (
         any(
             marker in source_text
@@ -3330,6 +3408,10 @@ SELECTION PRIORITIES
   pricing, contracts, regulation, trade, supply disruption, recalls, litigation,
   official product or feature launches, and material corporate actions regardless of
   company or country size.
+- Keep credible research or survey reports when they present new measurable economic
+  evidence with direct consequences for labor, industry, investment, pricing, or markets.
+  These reports are valuable economic news but normally belong at score 7-8.
+
 - A specific recall, official product or feature release, or production, supply, or
   service change may remain a score-7 corporate item even when its immediate impact is
   limited. Exclude it only when the source is merely promotional and does not identify
@@ -3425,6 +3507,9 @@ and immediacy of market or economic repricing.
 - 7: meaningful new economic information with limited impact.
 - 8: a major company result, industry change, policy, regulation, or economic release with
   substantial impact but no broad immediate shock.
+- Credible studies, surveys, and evidence-based analysis normally remain at 7-8 because
+  they inform readers without creating an immediate systemic event.
+
 - Scores 9-10 are reserved for confirmed, time-sensitive events with broad and immediate
   economic consequences.
 - 9 requires at least two strongly satisfied dimensions among broad reach, exceptional or

@@ -4512,6 +4512,114 @@ class NewsSelectorTests(unittest.TestCase):
             ],
         )
 
+    def test_keeps_routine_insider_sale_but_caps_it_below_breaking(self):
+        source = article(
+            "routine-insider-sale",
+            "Q CEO Xiao-Li Lee sells 5,423 shares worth $147,451",
+            "A company filing shows the chief executive completed a routine insider sale.",
+            "https://example.com/routine-insider-sale",
+        )
+        source["raw_content"] = (
+            "A company filing shows Q CEO Xiao-Li Lee sold 5,423 shares "
+            "worth $147,451 in a routine insider transaction."
+        )
+
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="\ud050 CEO, 5,423\uc8fc\ub97c 147,451\ub2ec\ub7ec\uc5d0 \ub9e4\ub3c4",
+                    content="\ud050 CEO\uac00 \ud68c\uc0ac \uc8fc\uc2dd 5,423\uc8fc\ub97c 147,451\ub2ec\ub7ec\uc5d0 \ub9e4\ub3c4\ud588\uc2b5\ub2c8\ub2e4.",
+                    importance_score=9,
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["importance_score"], 8)
+
+    def test_keeps_material_labor_study_but_caps_it_below_breaking(self):
+        source = article(
+            "ai-exposed-jobs-study",
+            "Job searches fall for roles exposed to AI, new study finds",
+            "A labor-market study measured a decline in job searches across AI-exposed occupations.",
+            "https://example.com/ai-exposed-jobs-study",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="AI \ub178\ucd9c \uc9c1\uc885\uc758 \uad6c\uc9c1 \ud65c\ub3d9 \uac10\uc18c",
+                    content="\uc0c8 \ub178\ub3d9\uc2dc\uc7a5 \uc5f0\uad6c\uc5d0\uc11c AI \ub178\ucd9c \uc9c1\uc885\uc758 \uad6c\uc9c1 \ud65c\ub3d9\uc774 \uac10\uc18c\ud55c \uac83\uc73c\ub85c \ub098\ud0c0\ub0ac\uc2b5\ub2c8\ub2e4.",
+                    importance_score=9,
+                    category="indicator",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["importance_score"], 8)
+
+    def test_caps_future_sanctions_announcement_below_breaking_even_during_war(self):
+        source = article(
+            "planned-iran-sanctions",
+            "US Treasury announces new Iran isolation measures for next week",
+            "Officials said the planned sanctions will be unveiled next week as the war continues.",
+            "https://example.com/planned-iran-sanctions",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="\ubbf8 \uc7ac\ubb34\ubd80, \ub2e4\uc74c \uc8fc \ub300\uc774\ub780 \uc81c\uc7ac \ubc1c\ud45c \uc608\uace0",
+                    content="\ubbf8 \uc7ac\ubb34\ubd80\uac00 \uc774\ub780 \uace0\ub9bd\uc744 \uc704\ud55c \ucd94\uac00 \uc81c\uc7ac\ub97c \ub2e4\uc74c \uc8fc \ubc1c\ud45c\ud558\uaca0\ub2e4\uace0 \ubc1d\ud614\uc2b5\ub2c8\ub2e4.",
+                    importance_score=9,
+                    category="geopolitics",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["importance_score"], 8)
+
+    def test_caps_geopolitical_rhetoric_below_breaking_without_confirmed_action(self):
+        source = article(
+            "hormuz-territory-rhetoric",
+            "Trump says US could declare Strait of Hormuz US territory",
+            "The president made the statement during remarks about the Iran war; no formal action was announced.",
+            "https://example.com/hormuz-territory-rhetoric",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="\ud2b8\ub7fc\ud504, \ud638\ub974\ubb34\uc988 \ud574\ud611 \ubbf8\uad6d \uc601\ud1a0 \uc120\uc5b8 \uac00\ub2a5\uc131 \uc5b8\uae09",
+                    content="\ud2b8\ub7fc\ud504 \ub300\ud1b5\ub839\uc774 \ud638\ub974\ubb34\uc988 \ud574\ud611\uc744 \ubbf8\uad6d \uc601\ud1a0\ub85c \uc120\uc5b8\ud560 \uac00\ub2a5\uc131\uc744 \uc5b8\uae09\ud588\uc2b5\ub2c8\ub2e4.",
+                    importance_score=9,
+                    category="geopolitics",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["importance_score"], 8)
+
     def test_caps_forward_gdp_forecast_below_breaking(self):
         source = article(
             "seychelles-gdp-forecast",
@@ -4552,6 +4660,32 @@ class NewsSelectorTests(unittest.TestCase):
                     title="바브엘만데브 해협 상선 피격으로 4명 사망",
                     content="후티 반군의 탄도미사일이 바브엘만데브 해협의 상선을 타격해 4명이 사망했습니다.",
                     importance_score=8,
+                    category="geopolitics",
+                    news_type="breaking",
+                )
+            ],
+            ensure_ascii=False,
+        )
+
+        selected = select_and_summarize([source], FakeGenerator(response))
+
+        self.assertEqual(selected[0]["importance_score"], 9)
+
+    def test_keeps_confirmed_strategic_attack_breaking_when_only_impact_is_uncertain(self):
+        source = article(
+            "confirmed-attack-uncertain-impact",
+            "Houthi missiles strike merchant ship in Bab el-Mandeb",
+            "Authorities confirmed the vessel was hit; the attack may disrupt global shipping.",
+            "https://example.com/confirmed-attack-uncertain-impact",
+        )
+        response = json.dumps(
+            [
+                decision_for(
+                    source,
+                    0,
+                    title="\ubc14\ube0c\uc5d8\ub9cc\ub370\ube0c \ud574\ud611 \uc0c1\uc120 \ubbf8\uc0ac\uc77c \ud53c\uaca9",
+                    content="\ud6c4\ud2f0 \ubc18\uad70\uc758 \ubbf8\uc0ac\uc77c\uc774 \ubc14\ube0c\uc5d8\ub9cc\ub370\ube0c \ud574\ud611\uc758 \uc0c1\uc120\uc744 \ud0c0\uaca9\ud588\uc2b5\ub2c8\ub2e4.",
+                    importance_score=9,
                     category="geopolitics",
                     news_type="breaking",
                 )
