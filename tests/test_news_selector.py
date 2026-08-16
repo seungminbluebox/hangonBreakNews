@@ -2040,7 +2040,7 @@ class NewsSelectorTests(unittest.TestCase):
 
         self.assertEqual(selected, [])
 
-    def test_rejects_unexplained_specialist_acronym(self):
+    def test_keeps_source_backed_acronym_without_quality_retry(self):
         source = article(
             "gpif-management",
             "Japan GPIF increases passive fund manager engagement to 62.6%",
@@ -2061,9 +2061,15 @@ class NewsSelectorTests(unittest.TestCase):
             }
         ]"""
 
-        selected = select_and_summarize([source], FakeGenerator(response))
+        generator = FakeGenerator(response)
 
-        self.assertEqual(selected, [])
+        selected = select_and_summarize([source], generator)
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["gpif-management"],
+        )
+        self.assertEqual(len(generator.prompts), 1)
 
     def test_caps_routine_record_and_earnings_but_keeps_market_intervention_breaking(self):
         market_record = article(
@@ -3382,7 +3388,7 @@ class NewsSelectorTests(unittest.TestCase):
             ["regional-supply-contract"],
         )
 
-    def test_rejects_summary_without_polite_report_ending(self):
+    def test_keeps_natural_korean_summary_without_quality_retry(self):
         source = article(
             "market-rise",
             "Wall Street rises on hopes of Middle East deal",
@@ -3406,7 +3412,11 @@ class NewsSelectorTests(unittest.TestCase):
 
         selected = select_and_summarize([source], generator)
 
-        self.assertEqual(selected, [])
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["market-rise"],
+        )
+        self.assertEqual(len(generator.prompts), 1)
 
     def test_rejects_korean_placeholder_summary(self):
         source = article(
@@ -4027,7 +4037,7 @@ class NewsSelectorTests(unittest.TestCase):
 
         self.assertEqual(selected, [])
 
-    def test_rejects_unlocalized_financial_and_foreign_script_fragments(self):
+    def test_allows_source_backed_financial_notation_but_rejects_foreign_fragments(self):
         sources = [
             article(
                 "alcon-symbols",
@@ -4075,7 +4085,10 @@ class NewsSelectorTests(unittest.TestCase):
 
         selected = select_and_summarize(sources, FakeGenerator(response))
 
-        self.assertEqual(selected, [])
+        self.assertEqual(
+            [item["provider_article_id"] for item in selected],
+            ["alcon-symbols"],
+        )
 
     def test_rejects_title_that_replaces_backed_spc_with_parent_company(self):
         source = article(

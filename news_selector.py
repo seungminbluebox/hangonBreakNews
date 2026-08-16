@@ -1545,18 +1545,9 @@ def _has_untranslated_english_prose(title: str, content: str) -> bool:
     )
 
 
-def _has_unlocalized_financial_or_foreign_notation(title: str, content: str) -> bool:
+def _has_foreign_script_fragment(title: str, content: str) -> bool:
     text = f"{title} {content}"
-    return bool(
-        re.search(r"[$€£¥]", text)
-        or re.search(
-            r"(?<![A-Za-z0-9])\d+(?:\.\d+)?\s*[MBT]\s*"
-            r"(?:(?:[-~–]\s*\d+(?:\.\d+)?\s*[MBT])|"
-            r"(?:원|달러|유로|엔|위안|루피|페소))",
-            text,
-        )
-        or re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff]", text)
-    )
+    return bool(re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff]", text))
 
 
 def _has_unsupported_currency_conversion(
@@ -2448,10 +2439,7 @@ def _is_valid_report_summary(content: str) -> bool:
         for sentence in re.split(r"(?<=[.!?])\s+", content.strip())
         if sentence.strip()
     ]
-    return 1 <= len(sentences) <= 2 and all(
-        re.search(r"(?:습니다|니다)[.!?]?$", sentence) is not None
-        for sentence in sentences
-    )
+    return 1 <= len(sentences) <= 2
 
 
 INCOMPLETE_TITLE_ENDINGS = (
@@ -3707,10 +3695,8 @@ def _decision_to_item(
         return failed("not_korean")
     if _has_untranslated_english_prose(title, content):
         return failed("untranslated_english_prose")
-    if _has_unlocalized_financial_or_foreign_notation(title, content):
-        return failed("unlocalized_financial_or_foreign_notation")
-    if _has_unexplained_specialist_acronym(title, content):
-        return failed("unexplained_specialist_acronym")
+    if _has_foreign_script_fragment(title, content):
+        return failed("foreign_script_fragment")
     if _has_ambiguous_percentage_growth(content):
         return failed("unnamed_percentage_metric")
     if _is_missing_primary_change_metric(articles[temp_id], title, content):
