@@ -7,8 +7,19 @@ import json
 import logging
 import re
 
+from openrouter_budget import OpenRouterBudgetError
+
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _deduplicated_partial_results(
+    selected: list[dict], recent_news_context: list[dict]
+) -> list[dict]:
+    return _deduplicate_against_recent(
+        _deduplicate_selected(selected),
+        recent_news_context,
+    )
 
 
 class SelectionResult(list):
@@ -3784,6 +3795,11 @@ def select_and_summarize(
                 response_text = _response_text(generator(selection_prompt))
                 batch_decisions = _load_decisions(response_text, generator)
                 break
+            except OpenRouterBudgetError as error:
+                error.partial_results = tuple(
+                    _deduplicated_partial_results(selected, recent_news_context)
+                )
+                raise
             except ValueError:
                 if selection_attempt == 1:
                     raise
@@ -3829,6 +3845,11 @@ def select_and_summarize(
                 _quality_repair_prompt(list(repair_payload_by_ref.values()))
             )
             repaired_decisions = _decode_json_array(_response_text(repair_response))
+        except OpenRouterBudgetError as error:
+            error.partial_results = tuple(
+                _deduplicated_partial_results(selected, recent_news_context)
+            )
+            raise
         except Exception as error:
             LOGGER.warning(
                 "Focused AI quality repair failed for %s article(s): %s",

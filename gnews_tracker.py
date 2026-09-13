@@ -20,17 +20,25 @@ from gnews_adapter import (
     collect_default_headlines,
 )
 from news_selector import NEWS_SELECTION_RESPONSE_FORMAT, select_and_summarize
+from news_pipeline import (
+    SELECTION_RESPONSE_FORMAT,
+    SUMMARY_RESPONSE_FORMAT,
+    run_two_stage_pipeline,
+)
+from openrouter_budget import OpenRouterBudgetError, is_free_model
 
 
 DEFAULT_GNEWS_AI_MODEL = "openrouter/free"
 DEFAULT_GNEWS_AI_BACKUP_MODEL = "openrouter/free"
 DEFAULT_CYCLE_SECONDS = 300
 DEFAULT_DAILY_REQUEST_LIMIT = 950
+DEFAULT_GNEWS_MAX_TOKENS = 8192
 DEFAULT_AI_BATCH_SIZE = 10
 RECENT_DUPLICATE_WINDOW_HOURS = 24
 RECENT_DUPLICATE_LIMIT = 300
 MAX_QUALITY_RETRIES = 3
 MAX_CARRIED_QUALITY_RETRIES_PER_CYCLE = 10
+PENDING_EXPIRY = timedelta(hours=3)
 
 
 @dataclass
@@ -187,6 +195,50 @@ def _chunks(items, size):
         yield items[start : start + size]
 
 
+def _pending_age(item: dict, now: datetime) -> timedelta | None:
+    """Return age, treating missing or malformed provider dates as expired."""
+    value = item.get("published_at")
+    if not isinstance(value, str) or not value.strip():
+        return PENDING_EXPIRY + timedelta(seconds=1)
+    try:
+        created_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError):
+        return PENDING_EXPIRY + timedelta(seconds=1)
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return now.astimezone(timezone.utc) - created_at.astimezone(timezone.utc)
+
+
+def _filter_pipeline_candidates(items, *, state=None):
+    """Apply the deterministic source filters shared by production and preview."""
+    from news_selector import (
+        EXCLUDED_FEED_SOURCE_IDS,
+        _is_low_value_item,
+        _is_minor_card_product_change,
+        _is_obvious_analysis_title,
+        _is_repackaged_old_event,
+    )
+
+    filtered = []
+    excluded_urls = set()
+    for item in items:
+        url = item.get("original_url")
+        if (
+            item.get("source_id") in EXCLUDED_FEED_SOURCE_IDS
+            or _is_obvious_analysis_title(item.get("raw_title") or "")
+            or _is_minor_card_product_change(item)
+            or _is_repackaged_old_event(item)
+            or _is_low_value_item(item)
+        ):
+            if url:
+                excluded_urls.add(url)
+                if state is not None:
+                    state.remember_evaluated(url)
+        else:
+            filtered.append(item)
+    return filtered, excluded_urls
+
+
 def run_cycle(
     client,
     generator,
@@ -213,6 +265,8 @@ def run_cycle(
         "quality_retry_exhausted": 0,
         "ai_failures": 0,
         "db_failures": 0,
+        "ai_blocked": 0,
+        "expired": 0,
     }
 
     fetched_at = clock()
@@ -233,6 +287,14 @@ def run_cycle(
         if not url or url in state.evaluated_urls:
             continue
         state.pending.setdefault(url, item)
+
+    for url, item in list(state.pending.items()):
+        age = _pending_age(item, fetched_at)
+        if age is not None and age > PENDING_EXPIRY:
+            state.pending.pop(url, None)
+            state.quality_retry_counts.pop(url, None)
+            state.remember_evaluated(url)
+            stats["expired"] += 1
 
     try:
         duplicate_urls = repository.existing_urls(state.pending.keys())
@@ -271,6 +333,38 @@ def run_cycle(
         *_chunks(fresh_articles, batch_size),
         *_chunks(carried_retries, batch_size),
     ]
+
+    def save_selected(selected_by_url):
+        for url, selected_item in selected_by_url.items():
+            try:
+                selected_item = selected_item.copy()
+                selected_item["importance_score"] = normalize_importance(
+                    selected_item["importance_score"]
+                )
+                was_saved = repository.save(selected_item)
+            except Exception as error:
+                stats["db_failures"] += 1
+                output(f"DB insert failed; article retained for retry: {error}")
+                continue
+
+            state.pending.pop(url, None)
+            state.remember_evaluated(url)
+            if not was_saved:
+                stats["duplicates"] += 1
+                continue
+
+            stats["saved"] += 1
+            recent_news.append(
+                {
+                    "title": selected_item["normalized_title"],
+                    "content": selected_item["normalized_content"],
+                }
+            )
+            try:
+                publisher(selected_item)
+            except Exception as error:
+                output(f"News saved, but notification failed: {error}")
+
     for batch in processing_batches:
         try:
             selected_articles = selector(
@@ -278,6 +372,21 @@ def run_cycle(
                 generator,
                 recent_news=recent_news,
             )
+        except OpenRouterBudgetError as error:
+            stats["ai_blocked"] += 1
+            partial_by_url = {
+                item["original_url"]: item
+                for item in getattr(error, "partial_results", ())
+                if item.get("original_url") in state.pending
+            }
+            stats["selected"] += len(partial_by_url)
+            save_selected(partial_by_url)
+            output(
+                f"AI requests blocked ({type(error).__name__}); "
+                f"{len(batch) - len(partial_by_url)} "
+                "article(s) retained for a later cycle."
+            )
+            break
         except Exception as error:
             stats["ai_failures"] += 1
             output(f"AI selection failed; {len(batch)} article(s) retained: {error}")
@@ -313,35 +422,7 @@ def run_cycle(
             state.remember_evaluated(url)
             stats["rejected"] += 1
 
-        for url, selected_item in selected_by_url.items():
-            try:
-                selected_item = selected_item.copy()
-                selected_item["importance_score"] = normalize_importance(
-                    selected_item["importance_score"]
-                )
-                was_saved = repository.save(selected_item)
-            except Exception as error:
-                stats["db_failures"] += 1
-                output(f"DB insert failed; article retained for retry: {error}")
-                continue
-
-            state.pending.pop(url, None)
-            state.remember_evaluated(url)
-            if not was_saved:
-                stats["duplicates"] += 1
-                continue
-
-            stats["saved"] += 1
-            recent_news.append(
-                {
-                    "title": selected_item["normalized_title"],
-                    "content": selected_item["normalized_content"],
-                }
-            )
-            try:
-                publisher(selected_item)
-            except Exception as error:
-                output(f"News saved, but notification failed: {error}")
+        save_selected(selected_by_url)
 
     stats["pending"] = len(state.pending)
     output(
@@ -350,7 +431,107 @@ def run_cycle(
         f"saved={stats['saved']} rejected={stats['rejected']} "
         f"quality_retries={stats['quality_retries']} "
         f"quality_retry_exhausted={stats['quality_retry_exhausted']} "
-        f"duplicates={stats['duplicates']} pending={stats['pending']}"
+        f"duplicates={stats['duplicates']} expired={stats['expired']} "
+        f"ai_blocked={stats['ai_blocked']} pending={stats['pending']}"
+    )
+    return stats
+
+
+def run_simple_cycle(
+    client,
+    generator,
+    repository,
+    publisher,
+    state: TrackerState,
+    *,
+    collector=collect_default_headlines,
+    clock=lambda: datetime.now(timezone.utc),
+    sleeper=time.sleep,
+    output=print,
+):
+    """Process only the current fetch with one selection and one summary stage."""
+    stats = {
+        "fetched": 0,
+        "selected": 0,
+        "saved": 0,
+        "duplicates": 0,
+        "rejected": 0,
+        "ai_failures": 0,
+        "ai_blocked": 0,
+        "db_failures": 0,
+        "cut": 0,
+    }
+    state.pending.clear()
+    state.quality_retry_counts.clear()
+    fetched_at = clock()
+    try:
+        fetched_articles = collector(client, fetched_at=fetched_at, sleeper=sleeper)
+    except Exception as error:
+        output(f"GNews fetch failed; current cycle discarded: {type(error).__name__}")
+        return stats
+    stats["fetched"] = len(fetched_articles)
+    articles_by_url = {
+        item.get("original_url"): item
+        for item in fetched_articles
+        if item.get("original_url") and item.get("original_url") not in state.evaluated_urls
+    }
+    try:
+        duplicate_urls = repository.existing_urls(articles_by_url)
+        recent_news = repository.recent_news(
+            fetched_at - timedelta(hours=RECENT_DUPLICATE_WINDOW_HOURS),
+            limit=RECENT_DUPLICATE_LIMIT,
+        )
+    except Exception as error:
+        stats["db_failures"] += 1
+        output(f"DB context unavailable; current cycle discarded: {type(error).__name__}")
+        return stats
+    for url in duplicate_urls:
+        articles_by_url.pop(url, None)
+        state.remember_evaluated(url)
+    stats["duplicates"] = len(duplicate_urls)
+    candidates = list(articles_by_url.values())
+    filtered, excluded_urls = _filter_pipeline_candidates(candidates, state=state)
+    stats["rejected"] += len(excluded_urls)
+    if not filtered:
+        return stats
+    try:
+        result = run_two_stage_pipeline(filtered, generator, recent_news=recent_news)
+    except OpenRouterBudgetError as error:
+        stats["ai_blocked"] += 1
+        output(f"AI requests blocked ({type(error).__name__}); current cycle deferred.")
+        return stats
+    except Exception as error:
+        stats["ai_failures"] += 1
+        output(f"AI pipeline failed; current cycle deferred: {type(error).__name__}")
+        return stats
+    for url in result.evaluated_urls:
+        state.remember_evaluated(url)
+    stats["cut"] = len(result.cut_urls)
+    stats["selected"] = len(result.selected)
+    for item in result.selected:
+        try:
+            normalized = item.copy()
+            normalized["importance_score"] = normalize_importance(
+                normalized["importance_score"]
+            )
+            saved = repository.save(normalized)
+        except Exception as error:
+            stats["db_failures"] += 1
+            output(f"DB insert failed; article deferred: {type(error).__name__}")
+            continue
+        state.remember_evaluated(item["original_url"])
+        if not saved:
+            stats["duplicates"] += 1
+            continue
+        stats["saved"] += 1
+        try:
+            publisher(normalized)
+        except Exception as error:
+            output(f"News saved, but notification failed: {type(error).__name__}")
+    output(
+        "GNews simple cycle: "
+        f"fetched={stats['fetched']} selected={stats['selected']} "
+        f"saved={stats['saved']} rejected={stats['rejected']} cut={stats['cut']}"
     )
     return stats
 
@@ -411,6 +592,30 @@ def run_dry_run(
         fetched_at=clock(),
         sleeper=sleeper,
     )
+    if selector is select_and_summarize:
+        filtered, _ = _filter_pipeline_candidates(collected_articles)
+        result = run_two_stage_pipeline(filtered, generator)
+        articles = result.selected
+        preview = [
+            {
+                "market_scope": item["market_scope"],
+                "source_name": item["source_name"],
+                "published_at": item["published_at"],
+                "title": item["normalized_title"],
+                "content": item["normalized_content"],
+                "importance_score": item["importance_score"],
+                "category": item["category"],
+                "news_type": item["news_type"],
+                "selection_reason": item["selection_reason"],
+                "raw_title": item["raw_title"],
+                "original_url": item["original_url"],
+            }
+            for item in articles
+        ]
+        output(json.dumps(preview, ensure_ascii=False, indent=2))
+        return articles
+
+    # Keep the injectable legacy selector contract for existing callers.
     batches = list(_chunks(collected_articles, batch_size))
     output(
         f"GNews dry run: fetched={len(collected_articles)} "
@@ -489,7 +694,7 @@ def run_production(
     )
 
     cycle = partial(
-        run_cycle,
+        run_simple_cycle,
         client,
         generator,
         repository,
@@ -505,23 +710,77 @@ def run_production(
     )
 
 
+class GNewsStageGenerator:
+    supports_stage_options = True
+
+    def __init__(self, *, model_name, backup_model_name, selection_max_tokens, summary_max_tokens):
+        from llm_helper import safe_generate_content
+
+        self._safe_generate_content = safe_generate_content
+        self.model_name = model_name
+        self.backup_model_name = backup_model_name
+        self.selection_max_tokens = selection_max_tokens
+        self.summary_max_tokens = summary_max_tokens
+        self.func = safe_generate_content
+        self.keywords = {
+            "max_retries": 1,
+            "model_name": model_name,
+            "backup_model_name": backup_model_name,
+            "response_format": SELECTION_RESPONSE_FORMAT,
+            "provider_preferences": {
+                "require_parameters": True,
+                "allow_fallbacks": True,
+            },
+            "request_timeout": 60,
+        }
+
+    def __call__(self, prompt, *, stage="selection"):
+        return self._safe_generate_content(
+            prompt,
+            max_retries=1,
+            model_name=self.model_name,
+            backup_model_name=self.backup_model_name,
+            response_format=(
+                SELECTION_RESPONSE_FORMAT
+                if stage == "selection"
+                else SUMMARY_RESPONSE_FORMAT
+            ),
+            provider_preferences={
+                "require_parameters": True,
+                "allow_fallbacks": True,
+            },
+            request_timeout=60,
+            max_tokens=(
+                self.selection_max_tokens
+                if stage == "selection"
+                else self.summary_max_tokens
+            ),
+        )
+
+
 def _build_generator(environment):
     from llm_helper import safe_generate_content
 
-    return partial(
-        safe_generate_content,
-        max_retries=3,
-        model_name=environment.get("GNEWS_AI_MODEL_NAME", DEFAULT_GNEWS_AI_MODEL),
-        backup_model_name=environment.get(
-            "GNEWS_AI_BACKUP_MODEL",
-            DEFAULT_GNEWS_AI_BACKUP_MODEL,
-        ),
-        response_format=NEWS_SELECTION_RESPONSE_FORMAT,
-        provider_preferences={
-            "require_parameters": True,
-            "allow_fallbacks": True,
-        },
-        request_timeout=60,
+    model_name = environment.get("GNEWS_AI_MODEL_NAME", DEFAULT_GNEWS_AI_MODEL)
+    backup_model_name = environment.get(
+        "GNEWS_AI_BACKUP_MODEL", DEFAULT_GNEWS_AI_BACKUP_MODEL
+    )
+    if not is_free_model(model_name) or not is_free_model(backup_model_name):
+        raise ValueError("GNews AI models must be free OpenRouter models.")
+
+    def positive_int(name):
+        value = int(environment.get(name, DEFAULT_GNEWS_MAX_TOKENS))
+        if value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+        return value
+
+    selection_max_tokens = positive_int("GNEWS_SELECTION_MAX_TOKENS")
+    summary_max_tokens = positive_int("GNEWS_SUMMARY_MAX_TOKENS")
+    return GNewsStageGenerator(
+        model_name=model_name,
+        backup_model_name=backup_model_name,
+        selection_max_tokens=selection_max_tokens,
+        summary_max_tokens=summary_max_tokens,
     )
 
 

@@ -6,10 +6,43 @@ import unittest
 from unittest.mock import Mock, patch
 
 from gnews_adapter import ScheduledHeadlineCollector
-from gnews_tracker import main, run_dry_run, run_production
+from gnews_tracker import _build_generator, main, run_dry_run, run_production
 
 
 class GNewsDryRunTests(unittest.TestCase):
+    def test_stage_generator_passes_stage_schema_and_token_budget(self):
+        with patch("llm_helper.safe_generate_content") as safe_generate_content:
+            generator = _build_generator(
+                {
+                    "GNEWS_AI_MODEL_NAME": "openrouter/free",
+                    "GNEWS_AI_BACKUP_MODEL": "google/gemma-test:free",
+                    "GNEWS_SELECTION_MAX_TOKENS": "8192",
+                    "GNEWS_SUMMARY_MAX_TOKENS": "4096",
+                }
+            )
+            generator("selection", stage="selection")
+            generator("summary", stage="summary")
+
+        self.assertEqual(safe_generate_content.call_count, 2)
+        selection_call, summary_call = safe_generate_content.call_args_list
+        self.assertEqual(selection_call.kwargs["max_retries"], 1)
+        self.assertEqual(selection_call.kwargs["max_tokens"], 8192)
+        self.assertEqual(
+            selection_call.kwargs["response_format"]["json_schema"]["name"],
+            "news_selection_shortlist",
+        )
+        self.assertEqual(summary_call.kwargs["max_tokens"], 4096)
+        self.assertEqual(
+            summary_call.kwargs["response_format"]["json_schema"]["name"],
+            "news_summary",
+        )
+
+    def test_stage_generator_rejects_paid_models_and_invalid_token_budget(self):
+        with self.assertRaises(ValueError):
+            _build_generator({"GNEWS_AI_MODEL_NAME": "google/gemini-2.5-flash"})
+        with self.assertRaises(ValueError):
+            _build_generator({"GNEWS_SELECTION_MAX_TOKENS": "0"})
+
     def test_prints_safe_preview_without_exposing_api_key(self):
         fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
         article = {
@@ -203,7 +236,7 @@ class GNewsDryRunTests(unittest.TestCase):
 
         generator = runner.call_args.args[1]
         self.assertIs(generator.func, safe_generate_content)
-        self.assertEqual(generator.keywords["max_retries"], 3)
+        self.assertEqual(generator.keywords["max_retries"], 1)
         self.assertEqual(generator.keywords["request_timeout"], 60)
         self.assertEqual(
             generator.keywords["model_name"],

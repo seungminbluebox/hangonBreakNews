@@ -7,6 +7,7 @@ from news_selector import (
     SELECTABLE_CATEGORIES,
     select_and_summarize,
 )
+from openrouter_budget import OpenRouterRequestBlocked
 
 
 class FakeGenerator:
@@ -70,6 +71,56 @@ def decision_for(
 
 
 class NewsSelectorTests(unittest.TestCase):
+    def test_quality_repair_rate_limit_propagates_with_verified_results(self):
+        first = article(
+            "verified-1",
+            "Company reports a new factory investment",
+            "The company announced a binding factory investment.",
+            "https://example.com/verified-1",
+        )
+        second = article(
+            "needs-repair",
+            "Company reports quarterly revenue",
+            "Revenue rose 10% after the company released quarterly results.",
+            "https://example.com/needs-repair",
+        )
+
+        class RepairBlockedGenerator:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, prompt):
+                self.calls += 1
+                if self.calls == 1:
+                    return SimpleNamespace(
+                        text=json.dumps(
+                            [
+                                decision_for(
+                                    first,
+                                    0,
+                                    title="공장 투자 계획 발표",
+                                    content="기업이 공장 투자를 공식 발표했습니다.",
+                                ),
+                                decision_for(
+                                    second,
+                                    1,
+                                    title="Revenue up 10%",
+                                    content="매출이 10% 증가했습니다.",
+                                ),
+                            ],
+                            ensure_ascii=False,
+                        )
+                    )
+                raise OpenRouterRequestBlocked("temporary", partial_results=())
+
+        with self.assertRaises(OpenRouterRequestBlocked) as context:
+            select_and_summarize([first, second], RepairBlockedGenerator())
+
+        self.assertEqual(
+            [item["provider_article_id"] for item in context.exception.partial_results],
+            ["verified-1"],
+        )
+
     def test_keeps_only_new_economic_development_and_preserves_source_facts(self):
         articles = [
             article(

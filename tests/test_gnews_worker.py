@@ -10,9 +10,13 @@ from gnews_tracker import (
     normalize_importance,
     publish_breaking_news,
     run_cycle,
+    run_simple_cycle,
     to_breaking_news_row,
 )
 from news_selector import SelectionResult
+from openrouter_budget import OpenRouterRequestBlocked
+from news_pipeline import PipelineResult
+from unittest.mock import patch
 
 
 def article(article_id="article-1", url="https://example.com/article-1"):
@@ -96,6 +100,190 @@ class ImportanceNormalizationTests(unittest.TestCase):
 
 
 class GNewsCycleTests(unittest.TestCase):
+    def test_simple_cycle_does_not_reprocess_prior_pending_and_uses_two_stage_result(self):
+        source = article()
+        state = TrackerState(pending={"https://example.com/old": article("old", "https://example.com/old")})
+        result = PipelineResult(evaluated_urls={source["original_url"]})
+        repository = FakeRepository()
+
+        with patch("gnews_tracker.run_two_stage_pipeline", return_value=result) as pipeline:
+            run_simple_cycle(
+                object(),
+                Mock(),
+                repository,
+                Mock(),
+                state,
+                collector=Mock(return_value=[source]),
+                clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+                sleeper=Mock(),
+                output=Mock(),
+            )
+
+        pipeline.assert_called_once()
+        self.assertEqual(state.pending, {})
+        self.assertIn(source["original_url"], state.evaluated_urls)
+        self.assertNotIn("https://example.com/old", state.evaluated_urls)
+
+    def test_simple_cycle_retries_failed_pipeline_only_when_source_returns_again(self):
+        source = article()
+        repository = FakeRepository()
+        state = TrackerState()
+        publisher = Mock()
+        pipeline_results = [
+            PipelineResult(unevaluated_urls={source["original_url"]}),
+            PipelineResult(selected=[selected(source)]),
+        ]
+        collector = Mock(side_effect=[[source], [], [source]])
+
+        with patch(
+            "gnews_tracker.run_two_stage_pipeline",
+            side_effect=pipeline_results,
+        ) as pipeline:
+            for _ in range(3):
+                run_simple_cycle(
+                    object(),
+                    Mock(),
+                    repository,
+                    publisher,
+                    state,
+                    collector=collector,
+                    clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+                    sleeper=Mock(),
+                    output=Mock(),
+                )
+
+        self.assertEqual(pipeline.call_count, 2)
+        self.assertEqual(len(repository.saved), 1)
+        self.assertIn(source["original_url"], state.evaluated_urls)
+
+    def test_simple_cycle_caches_normal_rejection(self):
+        source = article()
+        state = TrackerState()
+        collector = Mock(side_effect=[[source], [source]])
+        rejected = PipelineResult(evaluated_urls={source["original_url"]})
+
+        with patch(
+            "gnews_tracker.run_two_stage_pipeline",
+            return_value=rejected,
+        ) as pipeline:
+            for _ in range(2):
+                run_simple_cycle(
+                    object(),
+                    Mock(),
+                    FakeRepository(),
+                    Mock(),
+                    state,
+                    collector=collector,
+                    clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+                    sleeper=Mock(),
+                    output=Mock(),
+                )
+
+        pipeline.assert_called_once()
+        self.assertIn(source["original_url"], state.evaluated_urls)
+
+    def test_simple_cycle_leaves_selected_article_unmarked_when_save_fails(self):
+        source = article()
+        state = TrackerState()
+        repository = FakeRepository(failures=1)
+        collector = Mock(side_effect=[[source], [source]])
+        result = PipelineResult(selected=[selected(source)])
+
+        with patch(
+            "gnews_tracker.run_two_stage_pipeline",
+            return_value=result,
+        ) as pipeline:
+            for _ in range(2):
+                run_simple_cycle(
+                    object(),
+                    Mock(),
+                    repository,
+                    Mock(),
+                    state,
+                    collector=collector,
+                    clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+                    sleeper=Mock(),
+                    output=Mock(),
+                )
+
+        self.assertEqual(pipeline.call_count, 2)
+        self.assertEqual(len(repository.saved), 1)
+        self.assertIn(source["original_url"], state.evaluated_urls)
+
+    def test_expires_pending_articles_older_than_three_hours(self):
+        source = article()
+        state = TrackerState(pending={source["original_url"]: source})
+        stats = run_cycle(
+            object(),
+            Mock(),
+            FakeRepository(),
+            Mock(),
+            state,
+            collector=Mock(return_value=[]),
+            selector=Mock(),
+            clock=lambda: datetime(2026, 8, 3, 4, 1, tzinfo=timezone.utc),
+            sleeper=Mock(),
+            output=Mock(),
+        )
+
+        self.assertEqual(stats["expired"], 1)
+        self.assertEqual(state.pending, {})
+
+    def test_expires_pending_articles_with_missing_or_malformed_dates(self):
+        malformed = article("malformed", "https://example.com/malformed")
+        malformed["published_at"] = "not-a-date"
+        missing = article("missing", "https://example.com/missing")
+        missing.pop("published_at")
+        state = TrackerState(
+            pending={
+                malformed["original_url"]: malformed,
+                missing["original_url"]: missing,
+            }
+        )
+
+        stats = run_cycle(
+            object(),
+            Mock(),
+            FakeRepository(),
+            Mock(),
+            state,
+            collector=Mock(return_value=[]),
+            selector=Mock(),
+            clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+            sleeper=Mock(),
+            output=Mock(),
+        )
+
+        self.assertEqual(stats["expired"], 2)
+        self.assertEqual(state.pending, {})
+
+    def test_rate_limit_block_preserves_partial_results_and_defers_remaining_articles(self):
+        first = article("first", "https://example.com/first")
+        second = article("second", "https://example.com/second")
+        partial = OpenRouterRequestBlocked("daily", partial_results=(selected(first),))
+        repository = FakeRepository()
+        state = TrackerState()
+
+        stats = run_cycle(
+            object(),
+            Mock(),
+            repository,
+            Mock(),
+            state,
+            collector=Mock(return_value=[first, second]),
+            selector=Mock(side_effect=partial),
+            clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+            sleeper=Mock(),
+            output=Mock(),
+            batch_size=2,
+        )
+
+        self.assertEqual([item["original_url"] for item in repository.saved], [first["original_url"]])
+        self.assertIn(second["original_url"], state.pending)
+        self.assertNotIn(second["original_url"], state.evaluated_urls)
+        self.assertEqual(stats["rejected"], 0)
+        self.assertEqual(stats["ai_blocked"], 1)
+
     def test_supplies_recent_twenty_four_hour_news_to_duplicate_selection(self):
         source = article()
         recent_item = {

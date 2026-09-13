@@ -5,12 +5,20 @@ import requests
 import re
 from dotenv import load_dotenv
 
+from openrouter_budget import (
+    OpenRouterBudget,
+    OpenRouterBudgetError,
+    OpenRouterRequestBlocked,
+    is_free_model,
+)
+
 load_dotenv()
 
 class DummyResponse:
     """기존 파이썬 Gemini SDK의 response.text 프로퍼티와 호환성을 맞추기 위한 클래스"""
-    def __init__(self, text):
+    def __init__(self, text, *, finish_reason=None):
         self.text = text
+        self.finish_reason = finish_reason
 
 def safe_generate_content(
     prompt_text,
@@ -21,9 +29,11 @@ def safe_generate_content(
     response_format=None,
     provider_preferences=None,
     request_timeout=120,
+    request_budget=None,
+    max_tokens=2000,
 ):
     """
-    OpenRouter API 브로커 (DeepSeek V3 메인 + Gemini 2.5 Flash 백업)
+    OpenRouter API 브로커 (환경변수로 지정한 주/백업 모델)
     """
     # 환경 변수 및 설정
     AI_MODEL_NAME = model_name or os.getenv("OPENROUTER_MODEL_NAME", "openrouter/free")#
@@ -32,6 +42,10 @@ def safe_generate_content(
 
     if not OPENROUTER_API_KEY:
         raise ValueError("OPENROUTER_API_KEY가 환경변수에 등록되지 않았습니다.")
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+        raise ValueError("max_tokens must be a positive integer")
+
+    request_budget = request_budget or OpenRouterBudget.from_environment()
         
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -77,7 +91,7 @@ def safe_generate_content(
             "messages": [
                 {"role": "user", "content": enforced_prompt}
             ],
-            "max_tokens": 2000,
+            "max_tokens": max_tokens,
             "temperature": 0.2
         }
         if response_format is not None:
@@ -86,12 +100,49 @@ def safe_generate_content(
             data["provider"] = provider_preferences
         
         try:
+            reservation = request_budget.reserve(current_model)
+            if isinstance(reservation, dict):
+                print(
+                    "OpenRouter free request reserved: "
+                    f"used={reservation['daily_used']}/{reservation['daily_limit']} "
+                    f"remaining={reservation['daily_remaining']} "
+                    f"slot={reservation['slot_used']}/{reservation['slot_limit']}"
+                )
             res = requests.post(url, headers=headers, json=data, timeout=request_timeout)
-            res.raise_for_status() 
-            
+            status_code = getattr(res, "status_code", None)
+            is_429 = str(status_code) == "429"
+            response_body = getattr(res, "text", "")
+            if is_429 and is_free_model(current_model):
+                request_budget.record_rate_limit(
+                    model_name=current_model,
+                    status_code=status_code,
+                    body=response_body,
+                    headers=getattr(res, "headers", None),
+                )
+                raise OpenRouterRequestBlocked(
+                    "OpenRouter rate limit blocked further free-model requests."
+                )
+            res.raise_for_status()
+
             result_json = res.json()
             if 'error' in result_json:
-                raise Exception(f"OpenRouter API 에러: {result_json['error']}")
+                error_value = result_json["error"]
+                error_code = (
+                    error_value.get("code")
+                    if isinstance(error_value, dict)
+                    else None
+                )
+                if str(error_code) == "429" and is_free_model(current_model):
+                    request_budget.record_rate_limit(
+                        model_name=current_model,
+                        status_code=429,
+                        body=response_body or error_value,
+                        headers=getattr(res, "headers", None),
+                    )
+                    raise OpenRouterRequestBlocked(
+                        "OpenRouter rate limit blocked further free-model requests."
+                    )
+                raise RuntimeError("OpenRouter API returned an error response.")
             
             if 'choices' not in result_json:
                 raise Exception(f"API 응답에 'choices'가 없습니다: {result_json}")
@@ -107,23 +158,41 @@ def safe_generate_content(
             if not content_text:
                 raise ValueError("JSON 추출 결과가 비어 있습니다.")
                 
-            return DummyResponse(content_text)
+            finish_reason = None
+            choices = result_json.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                finish_reason = choices[0].get("finish_reason")
+            return DummyResponse(content_text, finish_reason=finish_reason)
             
+        except OpenRouterBudgetError:
+            raise
+
         except requests.exceptions.RequestException as e:
-            error_msg = str(e).lower()
-            if hasattr(e, 'response') and e.response is not None:
-                error_msg += f" (Status: {e.response.status_code}) {e.response.text}"
-                
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            if str(status_code) == "429" and is_free_model(current_model):
+                request_budget.record_rate_limit(
+                    model_name=current_model,
+                    status_code=429,
+                    body=getattr(getattr(e, "response", None), "text", ""),
+                    headers=getattr(getattr(e, "response", None), "headers", None),
+                )
+                raise OpenRouterRequestBlocked(
+                    "OpenRouter rate limit blocked further free-model requests."
+                )
+
             wait_time = random.uniform(3, 8) * (attempt + 1)
             print(f"⚠️ [속보 트래커: 우선 재시도]")
-            print(f"   [OpenRouter Error / {current_model}] 오류: {error_msg}")
+            print(
+                f"   [OpenRouter Error / {current_model}] "
+                f"{type(e).__name__} (status={status_code or 'unknown'})"
+            )
             print(f"   > {wait_time:.1f}초 대기 후 다음 모델로 속개... (시도 {attempt+1}/{max_retries})\n")
             
             time.sleep(wait_time)
             continue
             
         except Exception as e:
-            print(f"⚠️ [재시도] {current_model} 통신 실패: {e}")
+            print(f"⚠️ [재시도] {current_model} 통신 실패: {type(e).__name__}")
             time.sleep(random.uniform(3, 8) * (attempt + 1))
             continue
 

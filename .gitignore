@@ -3,3 +3,6 @@ fill.py
 hangonalarm-firebase-adminsdk-fbsvc-a0ddf6e01d.json
 __pycache__/
 *.pyc
+.openrouter-budget.sqlite3
+.openrouter-budget.sqlite3-wal
+.openrouter-budget.sqlite3-shm
