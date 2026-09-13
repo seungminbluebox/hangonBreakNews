@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 import gnews_adapter
 from gnews_adapter import GNewsClient, collect_default_headlines, normalize_article
+from cycle_logging import cycle_scope
 
 
 class FakeHttpResponse:
@@ -342,6 +343,187 @@ class GNewsClientTests(unittest.TestCase):
 
 
 class DefaultFeedCollectionTests(unittest.TestCase):
+    def test_search_request_uses_macro_query_and_recent_window(self):
+        payload = {
+            "articles": [
+                {
+                    "id": "search-old",
+                    "title": "Old inflation data",
+                    "description": "Old CPI data.",
+                    "content": "The source reports old CPI.",
+                    "url": "https://example.com/search-old",
+                    "publishedAt": "2026-08-02T22:59:00Z",
+                    "lang": "en",
+                    "source": {"name": "Example News", "url": "https://example.com", "country": "us"},
+                },
+                {
+                    "id": "search-1",
+                    "title": "Inflation data",
+                    "description": "New CPI data.",
+                    "content": "The source reports CPI.",
+                    "url": "https://example.com/search-1",
+                    "publishedAt": "2026-08-03T01:30:00Z",
+                    "lang": "en",
+                    "source": {"name": "Example News", "url": "https://example.com", "country": "us"},
+                },
+            ]
+        }
+        opener = Mock(return_value=FakeHttpResponse(payload))
+        client = GNewsClient(api_key="test-key", opener=opener)
+        fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
+
+        result = client.fetch_search(
+            query='"interest rate" OR inflation',
+            language="en",
+            market_scope="world",
+            max_articles=25,
+            fetched_at=fetched_at,
+        )
+
+        self.assertEqual(result[0]["provider_article_id"], "search-1")
+        parsed_url = urlparse(opener.call_args.args[0].full_url)
+        self.assertEqual(parsed_url.path, "/api/v4/search")
+        params = parse_qs(parsed_url.query)
+        self.assertEqual(params["q"], ['"interest rate" OR inflation'])
+        self.assertEqual(params["lang"], ["en"])
+        self.assertEqual(params["in"], ["title,description"])
+        self.assertEqual(params["sortby"], ["publishedAt"])
+        self.assertEqual(params["max"], ["25"])
+        self.assertEqual(params["from"], ["2026-08-02T23:00:00Z"])
+        self.assertEqual(params["to"], ["2026-08-03T02:00:00Z"])
+        self.assertNotIn("country", params)
+
+    def test_search_budget_rejection_makes_no_http_request(self):
+        opener = Mock()
+        before_request = Mock(side_effect=RuntimeError("private budget detail"))
+        client = GNewsClient(
+            api_key="test-key", opener=opener, before_request=before_request
+        )
+
+        with self.assertRaises(RuntimeError):
+            client.fetch_search(
+                query="inflation",
+                language="en",
+                market_scope="world",
+                max_articles=25,
+                fetched_at=datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+            )
+
+        opener.assert_not_called()
+
+    def test_search_retries_and_charges_shared_request_budget(self):
+        payload = {"articles": []}
+        temporary_error = HTTPError(
+            "https://gnews.io/api/v4/search", 503, "Service Unavailable", {}, None
+        )
+        opener = Mock(side_effect=[temporary_error, FakeHttpResponse(payload)])
+        before_request = Mock()
+        sleeper = Mock()
+        client = GNewsClient(
+            api_key="test-key",
+            opener=opener,
+            before_request=before_request,
+            sleeper=sleeper,
+            max_retries=1,
+        )
+
+        result = client.fetch_search(
+            query="inflation",
+            language="en",
+            market_scope="world",
+            max_articles=25,
+            fetched_at=datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(result, [])
+        self.assertEqual(opener.call_count, 2)
+        self.assertEqual(before_request.call_count, 2)
+        sleeper.assert_called_once_with(1.0)
+
+    def test_scheduled_search_rotates_groups_every_two_cycles(self):
+        client = Mock()
+        client.fetch_top_headlines.return_value = []
+        client.fetch_search.return_value = []
+        collector = gnews_adapter.ScheduledHeadlineCollector()
+        fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
+
+        for _ in range(8):
+            collector(client, fetched_at=fetched_at, sleeper=Mock(), delay_seconds=0)
+
+        self.assertEqual(
+            [request.kwargs["language"] for request in client.fetch_search.call_args_list],
+            ["ko", "en", "ko", "en"],
+        )
+        self.assertEqual(
+            [request.kwargs["market_scope"] for request in client.fetch_search.call_args_list],
+            ["kr", "world", "kr", "world"],
+        )
+
+    def test_288_cycles_make_720_headline_and_144_search_requests(self):
+        client = Mock()
+        client.fetch_top_headlines.return_value = []
+        client.fetch_search.return_value = []
+        collector = gnews_adapter.ScheduledHeadlineCollector()
+        fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
+
+        for _ in range(288):
+            collector(client, fetched_at=fetched_at, sleeper=Mock(), delay_seconds=0)
+
+        self.assertEqual(client.fetch_top_headlines.call_count, 720)
+        self.assertEqual(client.fetch_search.call_count, 144)
+        groups = [call.kwargs["query"] for call in client.fetch_search.call_args_list]
+        for _, _, query in gnews_adapter.SEARCH_GROUPS:
+            self.assertEqual(groups.count(query), 36)
+
+    def test_scheduled_search_failure_preserves_world_and_records_safe_failure(self):
+        world = normalized_item("world", "world", "https://example.com/world")
+        client = Mock()
+        client.fetch_top_headlines.return_value = [world]
+        client.fetch_search.side_effect = RuntimeError("secret search response")
+        collector = gnews_adapter.ScheduledHeadlineCollector()
+        fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
+
+        outputs = []
+        with cycle_scope(cycle_id="search-failure", slow_seconds=60, output=outputs.append) as context:
+            collector(client, fetched_at=fetched_at, sleeper=Mock())
+            result = collector(client, fetched_at=fetched_at, sleeper=Mock())
+
+        self.assertEqual(context.stats.get("fetch_failures"), 1)
+        self.assertEqual(context.stats.get("search_group"), "ko_macro")
+        self.assertEqual(result, [world])
+        self.assertEqual(
+            sum("event=cycle_summary" in line for line in outputs), 1
+        )
+        self.assertNotIn("secret search response", "\n".join(outputs))
+
+    def test_search_and_world_duplicates_are_removed_after_search_count(self):
+        world = normalized_item("same-id", "world", "https://example.com/same")
+        search_duplicate_url = {**world, "provider_article_id": "other-id"}
+        search_unique = normalized_item(
+            "search-unique", "world", "https://example.com/unique"
+        )
+        client = Mock()
+        client.fetch_top_headlines.return_value = [world]
+        client.fetch_search.return_value = [
+            search_duplicate_url,
+            search_unique,
+            {**search_unique, "provider_article_id": "another-id"},
+        ]
+        collector = gnews_adapter.ScheduledHeadlineCollector()
+        fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
+        collector(client, fetched_at=fetched_at, sleeper=Mock(), delay_seconds=0)
+
+        outputs = []
+        with cycle_scope(cycle_id="search-dedup", slow_seconds=60, output=outputs.append) as context:
+            result = collector(client, fetched_at=fetched_at, sleeper=Mock(), delay_seconds=0)
+
+        self.assertEqual(context.stats["search_fetched"], 3)
+        self.assertEqual(
+            [item["original_url"] for item in result],
+            ["https://example.com/same", "https://example.com/unique"],
+        )
+        self.assertEqual(sum("event=cycle_summary" in line for line in outputs), 1)
+        self.assertTrue(any("search_fetched=3" in line for line in outputs))
     def test_requests_plan_maximum_for_business_scopes_and_world_headlines(self):
         client = Mock()
         client.fetch_top_headlines.return_value = []
@@ -465,6 +647,7 @@ class DefaultFeedCollectionTests(unittest.TestCase):
         collector = collector_type()
         client = Mock()
         client.fetch_top_headlines.return_value = []
+        client.fetch_search.return_value = []
         sleeper = Mock()
         fetched_at = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
 

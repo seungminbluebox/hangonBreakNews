@@ -598,14 +598,16 @@ def run_simple_cycle(*args, **kwargs):
             raise
         if context.stats.get("ai_blocked"):
             context.set_status("blocked")
-        elif context.stats.get("fetch_failures"):
-            context.set_status("fetch_failed")
         elif (
             context.stats.get("ai_failures")
             or context.stats.get("db_failures")
             or context.stats.get("notify_failures")
         ):
             context.set_status("failed")
+        elif context.stats.get("fetch_failures"):
+            context.set_status(
+                "partial" if context.stats.get("fetched") else "fetch_failed"
+            )
         elif context.stats.get("quality_failed"):
             context.set_status("partial")
         elif not context.stats.get("candidates"):

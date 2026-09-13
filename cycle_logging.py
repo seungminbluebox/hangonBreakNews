@@ -191,6 +191,9 @@ class CycleLogContext:
             "elapsed": f"{time.monotonic() - self.started:.1f}",
             **self.budget,
         }
+        for key in ("search_group", "search_fetched"):
+            if key in self.stats:
+                values[key] = self.stats[key]
         if self.failure_stage:
             values["failure_stage"] = self.failure_stage
         if self.failure_reason:

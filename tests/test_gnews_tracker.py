@@ -6,7 +6,14 @@ import unittest
 from unittest.mock import Mock, patch
 
 from gnews_adapter import ScheduledHeadlineCollector
-from gnews_tracker import _build_generator, main, run_dry_run, run_production
+from gnews_tracker import (
+    TrackerState,
+    _build_generator,
+    main,
+    run_dry_run,
+    run_production,
+    run_simple_cycle,
+)
 
 
 class GNewsDryRunTests(unittest.TestCase):
@@ -298,6 +305,45 @@ class GNewsDryRunTests(unittest.TestCase):
 
 
 class GNewsProductionTests(unittest.TestCase):
+    def test_search_failure_with_world_results_is_partial_cycle(self):
+        from cycle_logging import current_context
+
+        world = {
+            "original_url": "https://example.com/world",
+            "provider_article_id": "world-1",
+            "raw_title": "World event",
+            "raw_description": "A concrete event.",
+            "raw_content": "A concrete event.",
+            "source_id": "example.com",
+        }
+
+        def collector(client, *, fetched_at, sleeper):
+            current_context().increment("fetch_failures")
+            return [world]
+
+        repository = Mock()
+        repository.existing_urls.return_value = set()
+        repository.recent_news.return_value = []
+        outputs = []
+        pipeline_result = SimpleNamespace(
+            selected=[], evaluated_urls=set(), cut_urls=set(), quality_failed=0
+        )
+        with patch("gnews_tracker.run_two_stage_pipeline", return_value=pipeline_result):
+            stats = run_simple_cycle(
+                Mock(),
+                Mock(),
+                repository,
+                Mock(),
+                TrackerState(),
+                collector=collector,
+                clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+                output=outputs.append,
+            )
+
+        self.assertEqual(stats["fetched"], 1)
+        self.assertEqual(stats["fetch_failures"], 1)
+        self.assertTrue(any("status=partial" in line for line in outputs))
+
     def test_uses_essential_plan_collection_schedule(self):
         fake_supabase = SimpleNamespace(create_client=Mock(return_value=object()))
         fake_push = SimpleNamespace(send_push_notification=Mock())
