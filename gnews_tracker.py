@@ -26,6 +26,7 @@ from news_pipeline import (
     run_two_stage_pipeline,
 )
 from openrouter_budget import OpenRouterBudgetError, is_free_model
+from cycle_logging import cycle_scope, current_context, log_event
 
 
 DEFAULT_GNEWS_AI_MODEL = "openrouter/free"
@@ -437,7 +438,7 @@ def run_cycle(
     return stats
 
 
-def run_simple_cycle(
+def _run_simple_cycle(
     client,
     generator,
     repository,
@@ -448,10 +449,12 @@ def run_simple_cycle(
     clock=lambda: datetime.now(timezone.utc),
     sleeper=time.sleep,
     output=print,
+    _stats=None,
 ):
     """Process only the current fetch with one selection and one summary stage."""
-    stats = {
+    defaults = {
         "fetched": 0,
+        "candidates": 0,
         "selected": 0,
         "saved": 0,
         "duplicates": 0,
@@ -459,15 +462,26 @@ def run_simple_cycle(
         "ai_failures": 0,
         "ai_blocked": 0,
         "db_failures": 0,
+        "quality_failed": 0,
+        "notify_failures": 0,
+        "fetch_failures": 0,
         "cut": 0,
     }
+    stats = _stats if _stats is not None else {}
+    for key, value in defaults.items():
+        stats.setdefault(key, value)
     state.pending.clear()
     state.quality_retry_counts.clear()
     fetched_at = clock()
     try:
         fetched_articles = collector(client, fetched_at=fetched_at, sleeper=sleeper)
     except Exception as error:
-        output(f"GNews fetch failed; current cycle discarded: {type(error).__name__}")
+        stats["fetch_failures"] += 1
+        context = current_context()
+        if context is not None:
+            context.failure_stage = "fetch"
+            context.failure_reason = type(error).__name__
+        log_event("gnews_fetch_failed", level=40, stage="fetch", error=type(error).__name__)
         return stats
     stats["fetched"] = len(fetched_articles)
     articles_by_url = {
@@ -476,6 +490,9 @@ def run_simple_cycle(
         if item.get("original_url") and item.get("original_url") not in state.evaluated_urls
     }
     try:
+        context = current_context()
+        if context is not None:
+            context.set_stage("context")
         duplicate_urls = repository.existing_urls(articles_by_url)
         recent_news = repository.recent_news(
             fetched_at - timedelta(hours=RECENT_DUPLICATE_WINDOW_HOURS),
@@ -483,7 +500,11 @@ def run_simple_cycle(
         )
     except Exception as error:
         stats["db_failures"] += 1
-        output(f"DB context unavailable; current cycle discarded: {type(error).__name__}")
+        context = current_context()
+        if context is not None:
+            context.failure_stage = "context"
+            context.failure_reason = type(error).__name__
+        log_event("db_context_failed", level=40, stage="context", error=type(error).__name__)
         return stats
     for url in duplicate_urls:
         articles_by_url.pop(url, None)
@@ -491,23 +512,36 @@ def run_simple_cycle(
     stats["duplicates"] = len(duplicate_urls)
     candidates = list(articles_by_url.values())
     filtered, excluded_urls = _filter_pipeline_candidates(candidates, state=state)
+    stats["candidates"] = len(filtered)
     stats["rejected"] += len(excluded_urls)
     if not filtered:
         return stats
     try:
         result = run_two_stage_pipeline(filtered, generator, recent_news=recent_news)
     except OpenRouterBudgetError as error:
-        stats["ai_blocked"] += 1
-        output(f"AI requests blocked ({type(error).__name__}); current cycle deferred.")
+        if not stats.get("ai_blocked"):
+            stats["ai_blocked"] += 1
+        context = current_context()
+        if context is not None:
+            context.failure_stage = "ai"
+            context.failure_reason = "budget_blocked"
         return stats
     except Exception as error:
         stats["ai_failures"] += 1
-        output(f"AI pipeline failed; current cycle deferred: {type(error).__name__}")
+        context = current_context()
+        if context is not None:
+            context.failure_stage = "ai"
+            context.failure_reason = type(error).__name__
         return stats
     for url in result.evaluated_urls:
         state.remember_evaluated(url)
     stats["cut"] = len(result.cut_urls)
     stats["selected"] = len(result.selected)
+    stats["quality_failed"] = getattr(result, "quality_failed", 0)
+    stats["rejected"] += len(result.evaluated_urls)
+    context = current_context()
+    if context is not None and result.selected:
+        context.set_stage("save")
     for item in result.selected:
         try:
             normalized = item.copy()
@@ -517,7 +551,11 @@ def run_simple_cycle(
             saved = repository.save(normalized)
         except Exception as error:
             stats["db_failures"] += 1
-            output(f"DB insert failed; article deferred: {type(error).__name__}")
+            context = current_context()
+            if context is not None:
+                context.failure_stage = "save"
+                context.failure_reason = type(error).__name__
+            log_event("db_insert_failed", level=40, stage="save", error=type(error).__name__)
             continue
         state.remember_evaluated(item["original_url"])
         if not saved:
@@ -525,15 +563,56 @@ def run_simple_cycle(
             continue
         stats["saved"] += 1
         try:
+            context = current_context()
+            if context is not None:
+                context.set_stage("notify")
             publisher(normalized)
         except Exception as error:
-            output(f"News saved, but notification failed: {type(error).__name__}")
-    output(
-        "GNews simple cycle: "
-        f"fetched={stats['fetched']} selected={stats['selected']} "
-        f"saved={stats['saved']} rejected={stats['rejected']} cut={stats['cut']}"
-    )
+            stats["notify_failures"] += 1
+            context = current_context()
+            if context is not None:
+                context.failure_stage = "notify"
+                context.failure_reason = type(error).__name__
+            log_event("notification_failed", level=40, stage="notify", error=type(error).__name__)
     return stats
+
+
+def run_simple_cycle(*args, **kwargs):
+    """Run one current-fetch cycle and emit exactly one structured summary."""
+    output_sink = kwargs.get("output")
+    if output_sink is print:
+        output_sink = None
+    with cycle_scope(output=output_sink) as context:
+        try:
+            stats = _run_simple_cycle(*args, _stats=context.stats, **kwargs)
+        except Exception as error:
+            context.failure_stage = context.stage
+            context.failure_reason = type(error).__name__
+            log_event("cycle_failed", level=40, stage=context.stage, error=type(error).__name__)
+            log_event(
+                "cycle_trace",
+                level=10,
+                stage=context.stage,
+                location="gnews_tracker.run_simple_cycle",
+            )
+            raise
+        if context.stats.get("ai_blocked"):
+            context.set_status("blocked")
+        elif context.stats.get("fetch_failures"):
+            context.set_status("fetch_failed")
+        elif (
+            context.stats.get("ai_failures")
+            or context.stats.get("db_failures")
+            or context.stats.get("notify_failures")
+        ):
+            context.set_status("failed")
+        elif context.stats.get("quality_failed"):
+            context.set_status("partial")
+        elif not context.stats.get("candidates"):
+            context.set_status("empty")
+        else:
+            context.set_status("ok")
+        return stats
 
 
 def next_cycle_delay(started_at, finished_at, *, interval_seconds=DEFAULT_CYCLE_SECONDS):
@@ -558,7 +637,7 @@ def run_forever(
         except KeyboardInterrupt:
             raise
         except Exception as error:
-            output(f"GNews cycle failed: {error}")
+            log_event("cycle_failed", level=40, stage="cycle", error=type(error).__name__)
         finished_at = monotonic()
         delay = next_cycle_delay(
             started_at,

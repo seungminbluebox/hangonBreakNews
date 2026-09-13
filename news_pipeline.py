@@ -7,6 +7,7 @@ from datetime import datetime
 import json
 
 from openrouter_budget import OpenRouterBudgetError
+from cycle_logging import current_context, log_event, record_failure, record_retry
 from news_selector import (
     SELECTABLE_CATEGORIES,
     SELECTABLE_NEWS_TYPES,
@@ -75,6 +76,7 @@ class PipelineResult:
     evaluated_urls: set[str] = field(default_factory=set)
     unevaluated_urls: set[str] = field(default_factory=set)
     cut_urls: set[str] = field(default_factory=set)
+    quality_failed: int = 0
 
 
 def _response_text(response) -> str:
@@ -168,6 +170,9 @@ ITEMS:
 
 
 def _call_stage(prompt, generator, *, retry_state, stage, validator=None):
+    context = current_context()
+    if context is not None:
+        context.set_stage(stage)
     for attempt in range(2):
         try:
             if getattr(generator, "supports_stage_options", False):
@@ -179,15 +184,24 @@ def _call_stage(prompt, generator, *, retry_state, stage, validator=None):
                 raise ValueError("AI response contract is invalid")
             return parsed
         except OpenRouterBudgetError:
+            record_failure("ai_blocked", stage=stage, reason="budget_blocked")
             raise
         except (ValueError, json.JSONDecodeError):
             if attempt == 1 or retry_state["used"]:
+                record_failure("ai_failures", stage=stage, reason="invalid_response")
+                log_event("ai_stage_failed", level=40, stage=stage, status="failed")
                 raise
             retry_state["used"] = True
+            record_retry()
+            log_event("ai_retry", level=30, stage=stage, attempt=2, max_attempts=2)
         except Exception:
             if attempt == 1 or retry_state["used"]:
+                record_failure("ai_failures", stage=stage, reason="stage_error")
+                log_event("ai_stage_failed", level=40, stage=stage, status="failed")
                 raise
             retry_state["used"] = True
+            record_retry()
+            log_event("ai_retry", level=30, stage=stage, attempt=2, max_attempts=2)
     raise AssertionError("unreachable")
 
 
@@ -283,6 +297,7 @@ def run_two_stage_pipeline(
     for decision in raw_selections:
         valid = _valid_selection(decision, considered)
         if valid is None or valid["source_ref"] in selected_refs:
+            record_failure("ai_failures", stage="selection", reason="invalid_identity")
             return PipelineResult(unevaluated_urls=considered_urls, cut_urls=cut_urls)
         selected_refs.add(valid["source_ref"])
         selections.append(valid)
@@ -332,9 +347,11 @@ def run_two_stage_pipeline(
 
     by_ref = {item["source_ref"]: item for item in top}
     items = []
+    quality_failed = 0
     summary_urls = set()
     for summary in raw_summaries:
         if not isinstance(summary, dict):
+            record_failure("ai_failures", stage="summary", reason="invalid_identity")
             return PipelineResult(
                 evaluated_urls=evaluated_urls,
                 unevaluated_urls={item["article"].get("original_url") for item in top},
@@ -343,6 +360,7 @@ def run_two_stage_pipeline(
         source_ref = summary.get("source_ref")
         selected = by_ref.get(source_ref)
         if selected is None or summary.get("temp_id") != selected["temp_id"]:
+            record_failure("ai_failures", stage="summary", reason="invalid_identity")
             return PipelineResult(
                 evaluated_urls=evaluated_urls,
                 unevaluated_urls={item["article"].get("original_url") for item in top},
@@ -364,6 +382,8 @@ def run_two_stage_pipeline(
         if item is not None:
             items.append(item)
             summary_urls.add(item["original_url"])
+        else:
+            quality_failed += 1
     unresolved = {
         item["article"].get("original_url") for item in top
     } - summary_urls
@@ -383,4 +403,5 @@ def run_two_stage_pipeline(
         evaluated_urls=evaluated_urls,
         unevaluated_urls=unresolved,
         cut_urls=cut_urls,
+        quality_failed=quality_failed,
     )

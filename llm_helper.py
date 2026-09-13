@@ -11,14 +11,61 @@ from openrouter_budget import (
     OpenRouterRequestBlocked,
     is_free_model,
 )
+from cycle_logging import current_context, log_event, record_ai_call, record_retry
 
 load_dotenv()
+
+_BLOCKED_NOTICE_KEYS = set()
 
 class DummyResponse:
     """기존 파이썬 Gemini SDK의 response.text 프로퍼티와 호환성을 맞추기 위한 클래스"""
     def __init__(self, text, *, finish_reason=None):
         self.text = text
         self.finish_reason = finish_reason
+
+
+def _log_rate_limit_transition(transition, request_budget=None):
+    if isinstance(transition, dict):
+        changed = transition.get("changed")
+        fields = {
+            "reason": transition.get("reason"),
+            "blocked_until": transition.get("blocked_until"),
+        }
+    else:
+        changed = bool(transition)
+        fields = {}
+    if changed:
+        key = (getattr(request_budget, "path", None), fields.get("reason"), fields.get("blocked_until"))
+        if key not in _BLOCKED_NOTICE_KEYS:
+            _BLOCKED_NOTICE_KEYS.add(key)
+            log_event("rate_limit_transition", level=30, status="blocked", **fields)
+
+
+def _log_persisted_block(request_budget):
+    try:
+        snapshot = request_budget.snapshot()
+    except Exception:
+        return
+    reason = snapshot.get("blocked_reason")
+    blocked_until = snapshot.get("blocked_until")
+    if reason is None or blocked_until is None:
+        return
+    key = (getattr(request_budget, "path", None), reason, blocked_until)
+    if key not in _BLOCKED_NOTICE_KEYS:
+        _BLOCKED_NOTICE_KEYS.add(key)
+        log_event(
+            "rate_limit_transition",
+            level=30,
+            status="blocked",
+            reason=reason,
+            blocked_until=blocked_until,
+        )
+
+
+def _clear_blocked_notices(request_budget):
+    path = getattr(request_budget, "path", None)
+    stale_keys = [key for key in _BLOCKED_NOTICE_KEYS if key[0] == path]
+    _BLOCKED_NOTICE_KEYS.difference_update(stale_keys)
 
 def safe_generate_content(
     prompt_text,
@@ -102,23 +149,36 @@ def safe_generate_content(
         try:
             reservation = request_budget.reserve(current_model)
             if isinstance(reservation, dict):
-                print(
-                    "OpenRouter free request reserved: "
-                    f"used={reservation['daily_used']}/{reservation['daily_limit']} "
-                    f"remaining={reservation['daily_remaining']} "
-                    f"slot={reservation['slot_used']}/{reservation['slot_limit']}"
+                context = current_context()
+                if context is not None:
+                    context.set_budget(
+                        used=reservation.get("daily_used"),
+                        limit=reservation.get("daily_limit"),
+                    )
+                log_event(
+                    "ai_request_reserved",
+                    level=10,
+                    used=reservation.get("daily_used"),
+                    remaining=reservation.get("daily_remaining"),
+                    slot_used=reservation.get("slot_used"),
+                    slot_limit=reservation.get("slot_limit"),
                 )
+                if reservation.get("breaker_released"):
+                    _clear_blocked_notices(request_budget)
+                    log_event("rate_limit_transition", level=20, status="unblocked")
+            record_ai_call()
             res = requests.post(url, headers=headers, json=data, timeout=request_timeout)
             status_code = getattr(res, "status_code", None)
             is_429 = str(status_code) == "429"
             response_body = getattr(res, "text", "")
             if is_429 and is_free_model(current_model):
-                request_budget.record_rate_limit(
+                transition = request_budget.record_rate_limit(
                     model_name=current_model,
                     status_code=status_code,
                     body=response_body,
                     headers=getattr(res, "headers", None),
                 )
+                _log_rate_limit_transition(transition, request_budget)
                 raise OpenRouterRequestBlocked(
                     "OpenRouter rate limit blocked further free-model requests."
                 )
@@ -133,12 +193,13 @@ def safe_generate_content(
                     else None
                 )
                 if str(error_code) == "429" and is_free_model(current_model):
-                    request_budget.record_rate_limit(
+                    transition = request_budget.record_rate_limit(
                         model_name=current_model,
                         status_code=429,
                         body=response_body or error_value,
                         headers=getattr(res, "headers", None),
                     )
+                    _log_rate_limit_transition(transition, request_budget)
                     raise OpenRouterRequestBlocked(
                         "OpenRouter rate limit blocked further free-model requests."
                     )
@@ -164,37 +225,56 @@ def safe_generate_content(
                 finish_reason = choices[0].get("finish_reason")
             return DummyResponse(content_text, finish_reason=finish_reason)
             
+        except OpenRouterRequestBlocked:
+            _log_persisted_block(request_budget)
+            raise
         except OpenRouterBudgetError:
             raise
 
         except requests.exceptions.RequestException as e:
             status_code = getattr(getattr(e, "response", None), "status_code", None)
             if str(status_code) == "429" and is_free_model(current_model):
-                request_budget.record_rate_limit(
+                transition = request_budget.record_rate_limit(
                     model_name=current_model,
                     status_code=429,
                     body=getattr(getattr(e, "response", None), "text", ""),
                     headers=getattr(getattr(e, "response", None), "headers", None),
                 )
+                _log_rate_limit_transition(transition, request_budget)
                 raise OpenRouterRequestBlocked(
                     "OpenRouter rate limit blocked further free-model requests."
                 )
 
             wait_time = random.uniform(3, 8) * (attempt + 1)
-            print(f"⚠️ [속보 트래커: 우선 재시도]")
-            print(
-                f"   [OpenRouter Error / {current_model}] "
-                f"{type(e).__name__} (status={status_code or 'unknown'})"
-            )
-            print(f"   > {wait_time:.1f}초 대기 후 다음 모델로 속개... (시도 {attempt+1}/{max_retries})\n")
+            if attempt < max_retries - 1:
+                record_retry()
+                if current_context() is None:
+                    log_event(
+                        "ai_retry",
+                        level=30,
+                        attempt=attempt + 1,
+                        max_attempts=max_retries,
+                        error=type(e).__name__,
+                        status_code=status_code or "unknown",
+                    )
             
             time.sleep(wait_time)
             continue
             
         except Exception as e:
-            print(f"⚠️ [재시도] {current_model} 통신 실패: {type(e).__name__}")
+            if attempt < max_retries - 1:
+                record_retry()
+                if current_context() is None:
+                    log_event(
+                        "ai_retry",
+                        level=30,
+                        attempt=attempt + 1,
+                        max_attempts=max_retries,
+                        error=type(e).__name__,
+                    )
             time.sleep(random.uniform(3, 8) * (attempt + 1))
             continue
 
-    print("🚨 최대 재시도 횟수를 초과했습니다. 데이터 전송에 실패했습니다.")
+    if current_context() is None:
+        log_event("ai_failed", level=40, status="failed")
     return None

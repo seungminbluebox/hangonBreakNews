@@ -5,6 +5,8 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from cycle_logging import cycle_scope
+
 
 class FakeQuery:
     def __init__(self, client, table_name):
@@ -12,6 +14,7 @@ class FakeQuery:
         self.table_name = table_name
         self.column = None
         self.value = None
+        self.operation = "select"
 
     def select(self, fields):
         return self
@@ -21,9 +24,18 @@ class FakeQuery:
         self.value = value
         return self
 
+    def delete(self):
+        self.operation = "delete"
+        return self
+
     def execute(self):
         self.client.queries.append((self.table_name, self.column, self.value))
         records = self.client.records
+        if self.operation == "delete":
+            self.client.records = [
+                item for item in records if item.get(self.column) != self.value
+            ]
+            return SimpleNamespace(data=[])
         if self.column == "fcm_token":
             records = [item for item in records if item.get("fcm_token") == self.value]
         elif self.column and self.column.startswith("preferences->>"):
@@ -219,6 +231,43 @@ class PushAudienceTests(unittest.TestCase):
         )
 
         self.assertEqual(module.messaging.sent_messages, [])
+
+    def test_unregistered_fcm_response_counts_failure_and_deletes_subscription(self):
+        module = load_push_notification_module()
+        database = FakeSupabase(
+            [
+                {
+                    "id": "expired-user",
+                    "fcm_token": "expired-token",
+                    "preferences": {"breaking_news": True},
+                }
+            ]
+        )
+        module.create_client = lambda *args: database
+        module.is_quiet_time = lambda: False
+        module.revalidate_path = lambda path: None
+        module.messaging.send_each_for_multicast = lambda message: SimpleNamespace(
+            success_count=0,
+            failure_count=1,
+            responses=[
+                SimpleNamespace(
+                    success=False,
+                    exception=SimpleNamespace(code="UNREGISTERED"),
+                )
+            ],
+        )
+
+        with cycle_scope(cycle_id="push-failure", slow_seconds=60) as context:
+            module.send_push_notification(
+                "긴급 속보",
+                "중요한 경제 소식입니다.",
+                "/live",
+                categories=("breaking_news",),
+            )
+
+        self.assertEqual(context.stats.get("notify_failures"), 1)
+        self.assertNotIn("expired-token", [item.get("fcm_token") for item in database.records])
+        self.assertIn(("fcm_subscriptions", "id", "expired-user"), database.queries)
 
 
 if __name__ == "__main__":

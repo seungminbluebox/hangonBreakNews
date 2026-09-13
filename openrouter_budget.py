@@ -188,6 +188,9 @@ class OpenRouterBudget:
                     raise OpenRouterRequestBlocked(
                         f"OpenRouter free requests blocked ({row[1]})."
                     )
+                breaker_released = bool(row)
+                if breaker_released:
+                    connection.execute("DELETE FROM openrouter_budget_breaker WHERE id=1")
 
                 quota = math.floor((slot + 1) * self.limit / SLOT_COUNT) - math.floor(
                     slot * self.limit / SLOT_COUNT
@@ -227,6 +230,7 @@ class OpenRouterBudget:
                 "daily_remaining": max(0, self.limit - int(daily_used)),
                 "slot_used": int((used[0] if used else 0) + 1),
                 "slot_limit": quota,
+                "breaker_released": breaker_released,
             }
         except OpenRouterBudgetError:
             raise
@@ -242,13 +246,13 @@ class OpenRouterBudget:
         status_code=429,
         body="",
         headers=None,
-    ) -> None:
+    ) -> dict | bool:
         """Persist a free-model breaker using only safe classification metadata."""
         if not is_free_model(model_name):
-            return
+            return False
         classification = classify_rate_limit(status_code=status_code, body=body)
         if classification is None:
-            return
+            return False
 
         now = _as_utc(self.clock())
         now_unix = _unix(now)
@@ -280,6 +284,9 @@ class OpenRouterBudget:
             connection = self._connect()
             try:
                 connection.execute("BEGIN IMMEDIATE")
+                previous = connection.execute(
+                    "SELECT blocked_until, reason FROM openrouter_budget_breaker WHERE id=1"
+                ).fetchone()
                 connection.execute(
                     """
                     INSERT INTO openrouter_budget_breaker(id, blocked_until, reason, updated_at)
@@ -297,6 +304,11 @@ class OpenRouterBudget:
                 raise
             finally:
                 connection.close()
+            return {
+                "changed": not previous or float(previous[0]) <= now_unix or previous[1] != reason,
+                "reason": reason,
+                "blocked_until": blocked_until,
+            }
         except OpenRouterBudgetError:
             raise
         except (sqlite3.Error, OSError) as error:

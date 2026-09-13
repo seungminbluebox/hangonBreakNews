@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pywebpush import webpush, WebPushException
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from cycle_logging import log_event, record_failure
 
 import firebase_admin
 from firebase_admin import credentials, messaging
@@ -42,16 +43,16 @@ if not firebase_admin._apps:
             cred_dict = json.loads(firebase_credentials_env)
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
-            print("Firebase Admin 초기화 성공! (환경변수 FIREBASE_CREDENTIALS 사용)")
+            log_event("firebase_ready", level=20, stage="notify")
         elif os.path.exists(key_path):
             # 2. 로컬 파일에서 로드
             cred = credentials.Certificate(key_path)
             firebase_admin.initialize_app(cred)
-            print(f"Firebase Admin 초기화 성공! (파일: {FIREBASE_KEY_FILENAME})")
+            log_event("firebase_ready", level=20, stage="notify")
         else:
-            print(f"경고: {key_path} 파일 또는 FIREBASE_CREDENTIALS 환경변수를 찾을 수 없습니다. FCM(Firebase) 전송은 실패할 수 있습니다.")
+            log_event("firebase_unavailable", level=30, stage="notify")
     except Exception as e:
-        print(f"Firebase Admin 초기화 실패: {e}")
+        log_event("firebase_init_failed", level=40, stage="notify", error=type(e).__name__)
 
 def is_quiet_time():
     """현재 한국 시간(KST)이 에티켓 시간(00:00~09:00)인지 확인"""
@@ -93,7 +94,7 @@ def send_push_notification(
                 .execute()
             )
             subscriptions = response.data
-            print(f"테스트 모드: 특정 FCM 토큰({test_fcm_token[:10]}...)으로만 발송합니다.")
+            log_event("notify_test_target", level=10, stage="notify")
         elif target_categories:
             subscriptions_by_recipient = {}
             for target_category in target_categories:
@@ -112,7 +113,7 @@ def send_push_notification(
                         subscription,
                     )
             subscriptions = list(subscriptions_by_recipient.values())
-            print(f"카테고리 필터링 적용: {', '.join(target_categories)}")
+            log_event("notify_audience_filtered", level=10, stage="notify", categories=len(target_categories))
         else:
             response = (
                 supabase.table("fcm_subscriptions")
@@ -121,14 +122,15 @@ def send_push_notification(
             )
             subscriptions = response.data
     except Exception as e:
-        print(f"구독 정보를 불러오는 중 에러 발생: {e}")
+        record_failure("notify_failures", stage="notify", reason=type(e).__name__)
+        log_event("notify_subscription_failed", level=40, stage="notify", error=type(e).__name__)
         return
 
     quiet_mode = is_quiet_time()
     if quiet_mode:
-        print(f"현재 에티켓 시간대입니다. ( {len(subscriptions)}명의 대상자에게 필터링 후 발송 처리합니다.)")
+        log_event("notify_quiet_time", level=10, stage="notify", subscribers=len(subscriptions))
     else:
-        print(f"현재 활동 시간대입니다. ( {len(subscriptions)}명의 대상자에게 발송 처리합니다.)")
+        log_event("notify_audience_ready", level=10, stage="notify", subscribers=len(subscriptions))
 
     # 알림 전송과 동시에 관련 페이지 캐시 갱신
     if url:
@@ -155,7 +157,7 @@ def send_push_notification(
                 )
                 if is_breaking_alert:
                     category_label = ", ".join(target_categories)
-                    print(f"에티켓 모드: 속보 알림( {category_label} ) 전송 안 함 (ID: {sub_record['id']})")
+                    log_event("notify_quiet_suppressed", level=10, stage="notify")
                     continue
                 else:
                     if fcm_token:
@@ -166,7 +168,7 @@ def send_push_notification(
                             "url": url,
                             "is_fcm": True # fcm 유저임을 표시
                         }]).execute()
-                        print(f"에티켓 모드: 알림 보류 및 큐 저장 (ID: {sub_record['id']})")
+                        log_event("notify_quiet_queued", level=10, stage="notify")
                     continue
 
             # 전부 FCM 유저이므로 조건 간소화
@@ -175,11 +177,12 @@ def send_push_notification(
                 fcm_token_to_id_map[fcm_token] = sub_record["id"]
 
         except Exception as e:
-            print(f"유저 데이터 필터링 중 에러 (ID: {sub_record.get('id')}): {e}")
+            record_failure("notify_failures", stage="notify", reason=type(e).__name__)
+            log_event("notify_subscriber_failed", level=40, stage="notify", error=type(e).__name__)
 
     # 2. Firebase Cloud Messaging(FCM)을 통한 초고속 대량 발송 (Multicast)
     if fcm_tokens_to_send:
-        print(f"-> FCM 멀티캐스트 방식으로 {len(fcm_tokens_to_send)}명에게 동시 발송합니다...")
+        log_event("notify_send_started", level=10, stage="notify", subscribers=len(fcm_tokens_to_send))
         # FCM 멀티캐스트는 최대 500개까지만 배열로 묶어서 발송 가능
         chunk_size = 500
         for i in range(0, len(fcm_tokens_to_send), chunk_size):
@@ -220,7 +223,20 @@ def send_push_notification(
             
             try:
                 response = messaging.send_each_for_multicast(message)
-                print(f"   FCM 발송 완료: 성공 {response.success_count}건 / 실패 {response.failure_count}건")
+                if response.failure_count:
+                    record_failure(
+                        "notify_failures",
+                        response.failure_count,
+                        stage="notify",
+                        reason="delivery_failed",
+                    )
+                log_event(
+                    "notify_send_completed",
+                    level=10,
+                    stage="notify",
+                    success=response.success_count,
+                    failed=response.failure_count,
+                )
                 
                 # 실패한 경우의 삭제 처리 루틴 (토큰 만료 등)
                 if response.failure_count > 0:
@@ -231,9 +247,10 @@ def send_push_notification(
                             # 에러 코드가 NOT_FOUND 이거나 UNREGISTERED 인 경우 구독 효력 상실
                             if resp.exception and resp.exception.code in ['NOT_FOUND', 'UNREGISTERED', 'INVALID_ARGUMENT']:
                                 supabase.table("fcm_subscriptions").delete().eq("id", sub_id).execute()
-                                print(f"   FCM 삭제됨(만료): {sub_id}")
+                                log_event("notify_expired_subscription", level=10, stage="notify")
             except Exception as e:
-                print(f"   FCM 일괄 전송 중 통신 에러 발생: {e}")
+                record_failure("notify_failures", stage="notify", reason=type(e).__name__)
+                log_event("notify_send_failed", level=40, stage="notify", error=type(e).__name__)
 
 def send_push_to_all(title, body, url="/"):
     """기존 함수 유지 (내부적으로 전체 전송 호출)"""
@@ -245,7 +262,9 @@ if __name__ == "__main__":
     date_str = f"{now.month}월 {now.day}일"
     
     # 여기에 회원님의 기기에 발급된 FCM 토큰을 입력하세요. (Supabase DB에서 확인 가능)
-    MY_TEST_FCM_TOKEN ="dGC2HK7l7AAPejJJnl8OeL:APA91bEaeGboqvoZBMt5p73rU3nGyylkd0i6Q_pIGMm2d7QJvcLD6yJ-z88AesmbanS5zLgDX59t09DbjmSMmiar6smpnYiKin118aha5Kfd5ymqP5QvUCo"
+    MY_TEST_FCM_TOKEN = os.getenv("TEST_FCM_TOKEN")
+    if not MY_TEST_FCM_TOKEN:
+        raise SystemExit("TEST_FCM_TOKEN is required for the manual notification test.")
     
     print("단일 기기 테스트 발송을 시작합니다...")
     send_push_notification(

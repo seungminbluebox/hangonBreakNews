@@ -210,6 +210,50 @@ class GNewsCycleTests(unittest.TestCase):
         self.assertEqual(len(repository.saved), 1)
         self.assertIn(source["original_url"], state.evaluated_urls)
 
+    def test_simple_cycle_summary_marks_pipeline_failure(self):
+        source = article()
+        outputs = []
+        with patch("gnews_tracker.run_two_stage_pipeline", side_effect=RuntimeError("secret-detail")):
+            run_simple_cycle(
+                object(),
+                Mock(),
+                FakeRepository(),
+                Mock(),
+                TrackerState(),
+                collector=Mock(return_value=[source]),
+                clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+                sleeper=Mock(),
+                output=outputs.append,
+            )
+
+        summary = next(line for line in outputs if "event=cycle_summary" in line)
+        self.assertIn("status=failed", summary)
+        self.assertIn("ai_failures=1", summary)
+        self.assertNotIn("secret-detail", "\n".join(outputs))
+
+    def test_simple_cycle_uses_injected_output_for_one_summary(self):
+        source = article()
+        outputs = []
+        with patch(
+            "gnews_tracker.run_two_stage_pipeline",
+            return_value=PipelineResult(evaluated_urls={source["original_url"]}),
+        ):
+            run_simple_cycle(
+                object(),
+                Mock(),
+                FakeRepository(),
+                Mock(),
+                TrackerState(),
+                collector=Mock(return_value=[source]),
+                clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+                sleeper=Mock(),
+                output=outputs.append,
+            )
+        self.assertEqual(
+            sum("event=cycle_summary" in line for line in outputs),
+            1,
+        )
+
     def test_expires_pending_articles_older_than_three_hours(self):
         source = article()
         state = TrackerState(pending={source["original_url"]: source})

@@ -3634,12 +3634,7 @@ def _decision_to_item(
         or source_ref != articles[temp_id].get("provider_article_id")
         or source_title != articles[temp_id].get("raw_title")
     ):
-        LOGGER.warning(
-            "Discarding AI decision with mismatched source identity: "
-            "temp_id=%s source_ref=%s",
-            temp_id,
-            source_ref,
-        )
+        LOGGER.debug("Discarding AI decision with mismatched source identity")
         return None, None
     if source_ref in seen_refs:
         return None, None
@@ -3652,12 +3647,7 @@ def _decision_to_item(
     selection_reason = decision.get("selection_reason")
 
     def failed(reason: str) -> tuple[None, str]:
-        LOGGER.warning(
-            "Discarding AI decision that failed quality validation: "
-            "source_ref=%s reason=%s",
-            source_ref,
-            reason,
-        )
+        LOGGER.debug("Discarding AI decision that failed quality validation: %s", reason)
         return None, reason
 
     if (
