@@ -834,6 +834,7 @@ class GNewsStageGenerator:
                 if stage == "selection"
                 else self.summary_max_tokens
             ),
+            raise_on_failure=True,
         )
 
 

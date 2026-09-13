@@ -1,5 +1,7 @@
 from datetime import datetime, timezone, timedelta
+import io
 import json
+import logging
 import os
 import tempfile
 from types import SimpleNamespace
@@ -8,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from gnews_tracker import GNewsStageGenerator
 from news_pipeline import run_two_stage_pipeline
+from cycle_logging import cycle_scope
 
 
 def article(index, *, published_at=None):
@@ -148,6 +151,34 @@ class TwoStagePipelineTests(unittest.TestCase):
 
         self.assertEqual(len(result.selected), 1)
         self.assertEqual(len(generator.prompts), 3)
+
+    def test_summary_identity_mismatch_logs_schema_error_and_keeps_unresolved(self):
+        source = article(0)
+        invalid_summary = {
+            **summary(0),
+            "source_ref": "wrong-provider-id",
+        }
+        generator = FakeGenerator([
+            json.dumps([selection(0)]),
+            json.dumps([invalid_summary]),
+        ])
+        import cycle_logging
+        logger = logging.getLogger("hangon.cycle")
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch.object(cycle_logging.sys, "stdout", stdout), patch.object(
+            cycle_logging.sys, "stderr", stderr
+        ):
+            with cycle_scope(cycle_id="identity-mismatch", slow_seconds=60):
+                result = run_two_stage_pipeline([source], generator)
+
+        self.assertEqual(result.selected, [])
+        self.assertIn(source["original_url"], result.unevaluated_urls)
+        self.assertIn("event=cycle_summary", stdout.getvalue())
+        self.assertIn("event=ai_stage_failed", stderr.getvalue())
+        self.assertIn("reason=schema_error", stderr.getvalue())
 
     @patch("llm_helper.requests.post")
     def test_real_helper_posts_once_per_stage_with_stage_schema_and_tokens(self, post):

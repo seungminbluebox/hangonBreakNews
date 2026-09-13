@@ -1,6 +1,7 @@
 import os
 import time
 import random
+import json
 import requests
 import re
 from dotenv import load_dotenv
@@ -16,6 +17,25 @@ from cycle_logging import current_context, log_event, record_ai_call, record_ret
 load_dotenv()
 
 _BLOCKED_NOTICE_KEYS = set()
+AI_FAILURE_REASONS = frozenset({
+    "timeout", "network_error", "http_error", "empty_response",
+    "invalid_json", "output_truncated", "schema_error", "unexpected_error",
+})
+
+
+class AIRequestError(RuntimeError):
+    """Safe, typed AI failure without retaining provider response details."""
+
+    def __init__(self, reason, status_code=None):
+        self.reason = reason if reason in AI_FAILURE_REASONS else "unexpected_error"
+        self.status_code = status_code if isinstance(status_code, int) else None
+        super().__init__(self.reason)
+
+
+class _FailureSignal(Exception):
+    def __init__(self, reason, status_code=None):
+        self.reason = reason
+        self.status_code = status_code
 
 class DummyResponse:
     """기존 파이썬 Gemini SDK의 response.text 프로퍼티와 호환성을 맞추기 위한 클래스"""
@@ -78,6 +98,7 @@ def safe_generate_content(
     request_timeout=120,
     request_budget=None,
     max_tokens=2000,
+    raise_on_failure=False,
 ):
     """
     OpenRouter API 브로커 (환경변수로 지정한 주/백업 모델)
@@ -129,10 +150,33 @@ def safe_generate_content(
         except:
             return text.strip()
 
+    last_failure = ("unexpected_error", None)
+
+    def retry_or_raise(reason, status_code, attempt):
+        nonlocal last_failure
+        last_failure = (reason, status_code)
+        if attempt < max_retries - 1:
+            record_retry()
+            if current_context() is None:
+                log_event(
+                    "ai_retry",
+                    level=30,
+                    attempt=attempt + 1,
+                    max_attempts=max_retries,
+                    reason=reason,
+                    status_code=status_code,
+                )
+            time.sleep(random.uniform(3, 8) * (attempt + 1))
+            return True
+        if raise_on_failure:
+            raise AIRequestError(reason, status_code)
+        return False
+
     for attempt in range(max_retries):
         # 첫 2회까지는 메인 모델, 그 이후는 백업 모델 시도
         current_model = AI_MODEL_NAME if attempt < 2 else BACKUP_MODEL_NAME
-        
+        status_code = None
+
         data = {
             "model": current_model,
             "messages": [
@@ -183,9 +227,16 @@ def safe_generate_content(
                     "OpenRouter rate limit blocked further free-model requests."
                 )
             res.raise_for_status()
+            if isinstance(status_code, int) and status_code >= 400:
+                raise _FailureSignal("http_error", status_code)
 
-            result_json = res.json()
-            if 'error' in result_json:
+            try:
+                result_json = res.json()
+            except (requests.exceptions.JSONDecodeError, json.JSONDecodeError, ValueError):
+                raise _FailureSignal("invalid_json", status_code)
+            if not isinstance(result_json, dict):
+                raise _FailureSignal("schema_error", status_code)
+            if "error" in result_json:
                 error_value = result_json["error"]
                 error_code = (
                     error_value.get("code")
@@ -203,26 +254,30 @@ def safe_generate_content(
                     raise OpenRouterRequestBlocked(
                         "OpenRouter rate limit blocked further free-model requests."
                     )
-                raise RuntimeError("OpenRouter API returned an error response.")
-            
-            if 'choices' not in result_json:
-                raise Exception(f"API 응답에 'choices'가 없습니다: {result_json}")
-                
-            _content = result_json['choices'][0]['message'].get('content')
+                safe_code = error_code if isinstance(error_code, int) else None
+                raise _FailureSignal("http_error", safe_code)
+
+            choices = result_json.get("choices")
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                raise _FailureSignal("schema_error", status_code)
+            choice = choices[0]
+            finish_reason = choice.get("finish_reason")
+            if finish_reason == "length":
+                raise _FailureSignal("output_truncated", status_code)
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                raise _FailureSignal("schema_error", status_code)
+            _content = message.get("content")
             if _content is None:
-                raise ValueError("API 응답의 'content'가 null(None)입니다.")
-            
+                raise _FailureSignal("empty_response", status_code)
+            if not isinstance(_content, str):
+                raise _FailureSignal("schema_error", status_code)
+
             raw_content = _content.strip()
-            
             # 사고 과정이나 마크다운이 섞여있어도 JSON만 정교하게 추출
             content_text = extract_json_payload(raw_content)
             if not content_text:
-                raise ValueError("JSON 추출 결과가 비어 있습니다.")
-                
-            finish_reason = None
-            choices = result_json.get("choices") or []
-            if choices and isinstance(choices[0], dict):
-                finish_reason = choices[0].get("finish_reason")
+                raise _FailureSignal("empty_response", status_code)
             return DummyResponse(content_text, finish_reason=finish_reason)
             
         except OpenRouterRequestBlocked:
@@ -231,50 +286,62 @@ def safe_generate_content(
         except OpenRouterBudgetError:
             raise
 
-        except requests.exceptions.RequestException as e:
-            status_code = getattr(getattr(e, "response", None), "status_code", None)
-            if str(status_code) == "429" and is_free_model(current_model):
+        except _FailureSignal as failure:
+            if retry_or_raise(failure.reason, failure.status_code, attempt):
+                continue
+
+        except requests.exceptions.JSONDecodeError:
+            if retry_or_raise("invalid_json", status_code, attempt):
+                continue
+
+        except requests.exceptions.Timeout:
+            if retry_or_raise("timeout", status_code, attempt):
+                continue
+
+        except requests.exceptions.HTTPError as error:
+            error_status = getattr(getattr(error, "response", None), "status_code", None)
+            if str(error_status) == "429" and is_free_model(current_model):
                 transition = request_budget.record_rate_limit(
                     model_name=current_model,
                     status_code=429,
-                    body=getattr(getattr(e, "response", None), "text", ""),
-                    headers=getattr(getattr(e, "response", None), "headers", None),
+                    body=getattr(getattr(error, "response", None), "text", ""),
+                    headers=getattr(getattr(error, "response", None), "headers", None),
                 )
                 _log_rate_limit_transition(transition, request_budget)
                 raise OpenRouterRequestBlocked(
                     "OpenRouter rate limit blocked further free-model requests."
                 )
+            if retry_or_raise("http_error", error_status, attempt):
+                continue
 
-            wait_time = random.uniform(3, 8) * (attempt + 1)
-            if attempt < max_retries - 1:
-                record_retry()
-                if current_context() is None:
-                    log_event(
-                        "ai_retry",
-                        level=30,
-                        attempt=attempt + 1,
-                        max_attempts=max_retries,
-                        error=type(e).__name__,
-                        status_code=status_code or "unknown",
-                    )
-            
-            time.sleep(wait_time)
-            continue
-            
-        except Exception as e:
-            if attempt < max_retries - 1:
-                record_retry()
-                if current_context() is None:
-                    log_event(
-                        "ai_retry",
-                        level=30,
-                        attempt=attempt + 1,
-                        max_attempts=max_retries,
-                        error=type(e).__name__,
-                    )
-            time.sleep(random.uniform(3, 8) * (attempt + 1))
-            continue
+        except requests.exceptions.ConnectionError:
+            if retry_or_raise("network_error", status_code, attempt):
+                continue
+
+        except requests.exceptions.RequestException as error:
+            error_status = getattr(getattr(error, "response", None), "status_code", None)
+            if str(error_status) == "429" and is_free_model(current_model):
+                transition = request_budget.record_rate_limit(
+                    model_name=current_model,
+                    status_code=429,
+                    body=getattr(getattr(error, "response", None), "text", ""),
+                    headers=getattr(getattr(error, "response", None), "headers", None),
+                )
+                _log_rate_limit_transition(transition, request_budget)
+                raise OpenRouterRequestBlocked(
+                    "OpenRouter rate limit blocked further free-model requests."
+                )
+            reason = "http_error" if isinstance(error_status, int) and error_status >= 400 else "network_error"
+            if retry_or_raise(reason, error_status, attempt):
+                continue
+
+        except Exception:
+            reason = "http_error" if isinstance(status_code, int) and status_code >= 400 else "unexpected_error"
+            if retry_or_raise(reason, status_code, attempt):
+                continue
 
     if current_context() is None:
-        log_event("ai_failed", level=40, status="failed")
+        log_event("ai_failed", level=40, status="failed", reason=last_failure[0], status_code=last_failure[1])
+    if raise_on_failure:
+        raise AIRequestError(*last_failure)
     return None

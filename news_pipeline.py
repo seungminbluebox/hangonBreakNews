@@ -7,6 +7,7 @@ from datetime import datetime
 import json
 
 from openrouter_budget import OpenRouterBudgetError
+from llm_helper import AIRequestError
 from cycle_logging import current_context, log_event, record_failure, record_retry
 from news_selector import (
     SELECTABLE_CATEGORIES,
@@ -70,6 +71,12 @@ SUMMARY_RESPONSE_FORMAT = {
 }
 
 
+class _PipelineResponseError(ValueError):
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
+
+
 @dataclass
 class PipelineResult:
     selected: list[dict] = field(default_factory=list)
@@ -81,10 +88,10 @@ class PipelineResult:
 
 def _response_text(response) -> str:
     if getattr(response, "finish_reason", None) == "length":
-        raise ValueError("AI response was truncated")
+        raise _PipelineResponseError("output_truncated")
     text = getattr(response, "text", None)
     if not isinstance(text, str) or not text.strip():
-        raise ValueError("AI response text is empty")
+        raise _PipelineResponseError("empty_response")
     return text.strip().strip("`").strip()
 
 
@@ -186,23 +193,55 @@ def _call_stage(prompt, generator, *, retry_state, stage, validator=None):
         except OpenRouterBudgetError:
             record_failure("ai_blocked", stage=stage, reason="budget_blocked")
             raise
-        except (ValueError, json.JSONDecodeError):
+        except AIRequestError as error:
+            reason = error.reason
             if attempt == 1 or retry_state["used"]:
-                record_failure("ai_failures", stage=stage, reason="invalid_response")
-                log_event("ai_stage_failed", level=40, stage=stage, status="failed")
+                record_failure("ai_failures", stage=stage, reason=reason)
+                log_event("ai_stage_failed", level=40, stage=stage, status="failed", reason=reason)
                 raise
             retry_state["used"] = True
             record_retry()
-            log_event("ai_retry", level=30, stage=stage, attempt=2, max_attempts=2)
+            log_event("ai_retry", level=30, stage=stage, attempt=2, max_attempts=2, reason=reason)
+        except _PipelineResponseError as error:
+            if attempt == 1 or retry_state["used"]:
+                record_failure("ai_failures", stage=stage, reason=error.reason)
+                log_event("ai_stage_failed", level=40, stage=stage, status="failed", reason=error.reason)
+                raise
+            retry_state["used"] = True
+            record_retry()
+            log_event("ai_retry", level=30, stage=stage, attempt=2, max_attempts=2, reason=error.reason)
+        except json.JSONDecodeError:
+            reason = "invalid_json"
+            if attempt == 1 or retry_state["used"]:
+                record_failure("ai_failures", stage=stage, reason=reason)
+                log_event("ai_stage_failed", level=40, stage=stage, status="failed", reason=reason)
+                raise
+            retry_state["used"] = True
+            record_retry()
+            log_event("ai_retry", level=30, stage=stage, attempt=2, max_attempts=2, reason=reason)
+        except ValueError:
+            reason = "schema_error"
+            if attempt == 1 or retry_state["used"]:
+                record_failure("ai_failures", stage=stage, reason=reason)
+                log_event("ai_stage_failed", level=40, stage=stage, status="failed", reason=reason)
+                raise
+            retry_state["used"] = True
+            record_retry()
+            log_event("ai_retry", level=30, stage=stage, attempt=2, max_attempts=2, reason=reason)
         except Exception:
             if attempt == 1 or retry_state["used"]:
-                record_failure("ai_failures", stage=stage, reason="stage_error")
-                log_event("ai_stage_failed", level=40, stage=stage, status="failed")
+                record_failure("ai_failures", stage=stage, reason="unexpected_error")
+                log_event("ai_stage_failed", level=40, stage=stage, status="failed", reason="unexpected_error")
                 raise
             retry_state["used"] = True
             record_retry()
-            log_event("ai_retry", level=30, stage=stage, attempt=2, max_attempts=2)
+            log_event("ai_retry", level=30, stage=stage, attempt=2, max_attempts=2, reason="unexpected_error")
     raise AssertionError("unreachable")
+
+
+def _record_schema_failure(stage):
+    record_failure("ai_failures", stage=stage, reason="schema_error")
+    log_event("ai_stage_failed", level=40, stage=stage, status="failed", reason="schema_error")
 
 
 def _valid_selection(decision, articles):
@@ -297,7 +336,7 @@ def run_two_stage_pipeline(
     for decision in raw_selections:
         valid = _valid_selection(decision, considered)
         if valid is None or valid["source_ref"] in selected_refs:
-            record_failure("ai_failures", stage="selection", reason="invalid_identity")
+            _record_schema_failure("selection")
             return PipelineResult(unevaluated_urls=considered_urls, cut_urls=cut_urls)
         selected_refs.add(valid["source_ref"])
         selections.append(valid)
@@ -351,7 +390,7 @@ def run_two_stage_pipeline(
     summary_urls = set()
     for summary in raw_summaries:
         if not isinstance(summary, dict):
-            record_failure("ai_failures", stage="summary", reason="invalid_identity")
+            _record_schema_failure("summary")
             return PipelineResult(
                 evaluated_urls=evaluated_urls,
                 unevaluated_urls={item["article"].get("original_url") for item in top},
@@ -360,7 +399,7 @@ def run_two_stage_pipeline(
         source_ref = summary.get("source_ref")
         selected = by_ref.get(source_ref)
         if selected is None or summary.get("temp_id") != selected["temp_id"]:
-            record_failure("ai_failures", stage="summary", reason="invalid_identity")
+            _record_schema_failure("summary")
             return PipelineResult(
                 evaluated_urls=evaluated_urls,
                 unevaluated_urls={item["article"].get("original_url") for item in top},

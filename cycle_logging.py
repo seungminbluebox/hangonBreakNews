@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import logging
 import math
 import os
+import sys
 import threading
 import time
 import uuid
@@ -20,22 +21,46 @@ _CURRENT: ContextVar["CycleLogContext | None"] = ContextVar(
 )
 
 
+class _MaxLevelFilter(logging.Filter):
+    def __init__(self, maximum):
+        super().__init__()
+        self.maximum = maximum
+
+    def filter(self, record):
+        return record.levelno <= self.maximum
+
+
 def _logger() -> logging.Logger:
     logger = logging.getLogger(LOGGER_NAME)
-    owned_handler = getattr(logger, "_hangon_handler", None)
-    if owned_handler in logger.handlers:
-        level_name = os.getenv("GNEWS_LOG_LEVEL", "INFO").upper()
-        logger.setLevel(getattr(logging, level_name, logging.INFO))
+    level_name = os.getenv("GNEWS_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    stdout_handler = getattr(logger, "_hangon_stdout_handler", None)
+    stderr_handler = getattr(logger, "_hangon_stderr_handler", None)
+    if stdout_handler in logger.handlers and stderr_handler in logger.handlers:
+        logger.setLevel(level)
         return logger
-    if owned_handler not in logger.handlers:
-        if not logger.handlers:
-            level_name = os.getenv("GNEWS_LOG_LEVEL", "INFO").upper()
-            logger.setLevel(getattr(logging, level_name, logging.INFO))
-            handler = logging.StreamHandler()
-            handler.setFormatter(logging.Formatter("%(message)s"))
-            logger.addHandler(handler)
-            logger._hangon_handler = handler
-            logger.propagate = False
+    # Test/application handlers (for example assertLogs) own routing while installed.
+    owned_handlers = (stdout_handler, stderr_handler, getattr(logger, "_hangon_handler", None))
+    if logger.handlers and not any(handler in logger.handlers for handler in owned_handlers):
+        return logger
+    if stdout_handler not in logger.handlers or stderr_handler not in logger.handlers:
+        for handler in (stdout_handler, stderr_handler, getattr(logger, "_hangon_handler", None)):
+            if handler in logger.handlers:
+                logger.removeHandler(handler)
+        logger.setLevel(level)
+        formatter = logging.Formatter("%(message)s")
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler.setLevel(logging.DEBUG)
+        stdout_handler.addFilter(_MaxLevelFilter(logging.ERROR - 1))
+        stdout_handler.setFormatter(formatter)
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setLevel(logging.ERROR)
+        stderr_handler.setFormatter(formatter)
+        logger.addHandler(stdout_handler)
+        logger.addHandler(stderr_handler)
+        logger._hangon_stdout_handler = stdout_handler
+        logger._hangon_stderr_handler = stderr_handler
+        logger.propagate = False
     return logger
 
 

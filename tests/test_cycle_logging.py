@@ -1,4 +1,5 @@
 import logging
+import io
 import unittest
 from unittest.mock import patch
 
@@ -76,6 +77,28 @@ class CycleLoggingTests(unittest.TestCase):
                 timer.callback()
         self.assertTrue(timer.cancelled)
         self.assertFalse(any("event=cycle_slow" in line for line in captured.output))
+
+    def test_info_warn_and_error_use_separate_real_streams(self):
+        import cycle_logging
+
+        logger = logging.getLogger("hangon.cycle")
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch.object(cycle_logging.sys, "stdout", stdout), patch.object(
+            cycle_logging.sys, "stderr", stderr
+        ):
+            with cycle_scope(cycle_id="streams-cycle", slow_seconds=60):
+                log_event("visible_info", level=logging.INFO)
+                log_event("visible_warn", level=logging.WARNING)
+                log_event("visible_error", level=logging.ERROR)
+
+        self.assertIn("event=visible_info", stdout.getvalue())
+        self.assertIn("event=visible_warn", stdout.getvalue())
+        self.assertNotIn("event=visible_error", stdout.getvalue())
+        self.assertIn("event=visible_error", stderr.getvalue())
+        self.assertNotIn("event=visible_info", stderr.getvalue())
 
 
 if __name__ == "__main__":
