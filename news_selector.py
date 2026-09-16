@@ -63,7 +63,7 @@ NEWS_SELECTION_RESPONSE_FORMAT = {
                     "source_ref": {"type": "string"},
                     "source_title": {"type": "string", "maxLength": 500},
                     "title": {"type": "string", "maxLength": 55},
-                    "content": {"type": "string", "maxLength": 110},
+                    "content": {"type": "string"},
                     "importance_score": {"type": "integer", "minimum": 7, "maximum": 10},
                     "category": {
                         "type": "string",
@@ -2444,6 +2444,8 @@ def _is_valid_report_summary(content: str) -> bool:
         return False
     if any(phrase in content for phrase in SUMMARY_FORBIDDEN_TEMPLATE_PHRASES):
         return False
+    if not re.search(r"니다[.!?](?:[\"'”’)}\]>〉》」』]*)$", content.strip()):
+        return False
 
     sentences = [
         sentence.strip()
@@ -3484,9 +3486,10 @@ FACT FIDELITY AND KOREAN OUTPUT
   name in parentheses; do not guess.
 - Do not invent forecasts, causal claims, market reactions, investment opinions, or
   stock phrases such as "market impact" or "watch point."
-- The content must report the core fact and key number or timing first, use 1-2 natural
-  Korean sentences, use a polite news-reporting ending, and contain no more than 110 Korean
-  characters. Do not end it as a headline fragment or mechanically append a stock phrase.
+- The content must report the core fact and key number or timing first and use 1-2 natural
+  Korean sentences with a complete polite news-reporting ending and punctuation. Aim for no
+  more than 110 Korean characters, but preserve the complete summary when more space is needed.
+  Never cut a word or sentence or mechanically append a stock phrase to meet the target.
 
 DUPLICATES AND MATERIAL FOLLOW-UPS
 - Within the candidates and against recent stored news, select only the most specific
@@ -3550,7 +3553,7 @@ Each item must have this exact shape:
   "source_ref": copy the candidate source_ref character-for-character,
   "source_title": copy the candidate title character-for-character,
   "title": a complete Korean headline, ideally <=35 characters and never >55,
-  "content": a Korean 1-2 sentence fact summary with no more than 110 Korean characters,
+  "content": a complete Korean 1-2 sentence fact summary, normally within 110 characters,
   "importance_score": an integer from 7 through 10,
   "category": "market" | "indicator" | "geopolitics" | "corporate" | "policy",
   "news_type": "breaking" | "new_development" | "official_announcement" | "follow_up",
@@ -3606,7 +3609,7 @@ Return only the repaired items as one bare JSON array:
   "source_ref": copy the original source_ref,
   "source_title": copy the original source_title,
   "title": a complete Korean headline, ideally <=35 characters and never >55,
-  "content": a Korean 1-2 sentence factual summary with no more than 110 Korean characters,
+  "content": a complete Korean 1-2 sentence factual summary, normally within 110 characters,
   "importance_score": an integer from 7 through 10,
   "category": "market" | "indicator" | "geopolitics" | "corporate" | "policy",
   "news_type": "breaking" | "new_development" | "official_announcement" | "follow_up",

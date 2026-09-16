@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from gnews_tracker import GNewsStageGenerator
-from news_pipeline import run_two_stage_pipeline
+from news_pipeline import SUMMARY_RESPONSE_FORMAT, run_two_stage_pipeline
 from cycle_logging import cycle_scope
 
 
@@ -151,6 +151,47 @@ class TwoStagePipelineTests(unittest.TestCase):
 
         self.assertEqual(len(result.selected), 1)
         self.assertEqual(len(generator.prompts), 3)
+
+    def test_rejects_summary_that_ends_mid_sentence(self):
+        source = article(0)
+        incomplete = summary(0)
+        incomplete["content"] = (
+            "가기업이 수도권 생산시설 증설을 확정하고 내년부터 생산량을 "
+            "단계적으로 늘릴"
+        )
+        generator = FakeGenerator([
+            json.dumps([selection(0)], ensure_ascii=False),
+            json.dumps([incomplete], ensure_ascii=False),
+        ])
+
+        result = run_two_stage_pipeline([source], generator)
+
+        self.assertEqual(result.selected, [])
+        self.assertEqual(result.quality_failed, 1)
+        self.assertIn(source["original_url"], result.unevaluated_urls)
+
+    def test_preserves_complete_summary_over_one_hundred_ten_characters(self):
+        source = article(0)
+        complete_content = (
+            "가기업은 공급망 안정과 생산 능력 확대를 위해 수도권 공장 증설 계획을 "
+            "확정했으며, 신규 설비 도입과 인력 충원을 거쳐 내년부터 생산량을 단계적으로 "
+            "늘리고 주요 고객사 납품 일정도 안정적으로 운영할 예정이라고 밝혔습니다."
+        )
+        self.assertGreater(len(complete_content), 110)
+        complete = summary(0)
+        complete["content"] = complete_content
+        generator = FakeGenerator([
+            json.dumps([selection(0)], ensure_ascii=False),
+            json.dumps([complete], ensure_ascii=False),
+        ])
+
+        result = run_two_stage_pipeline([source], generator)
+        content_schema = SUMMARY_RESPONSE_FORMAT["json_schema"]["schema"][
+            "items"
+        ]["properties"]["content"]
+
+        self.assertNotIn("maxLength", content_schema)
+        self.assertEqual(result.selected[0]["normalized_content"], complete_content)
 
     def test_summary_identity_mismatch_logs_schema_error_and_keeps_unresolved(self):
         source = article(0)

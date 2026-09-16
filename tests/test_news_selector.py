@@ -180,7 +180,9 @@ class NewsSelectorTests(unittest.TestCase):
             "A comparison of valuations and past performance.",
             generator.prompts[0],
         )
-        self.assertIn("no more than 110 Korean characters", generator.prompts[0])
+        normalized_prompt = " ".join(generator.prompts[0].split())
+        self.assertIn("Aim for no more than 110 Korean characters", normalized_prompt)
+        self.assertIn("preserve the complete summary", normalized_prompt)
         self.assertIn("Do not invent forecasts, causal claims", generator.prompts[0])
 
     def test_selection_prompt_uses_english_controls_and_requires_korean_output(self):
@@ -3439,7 +3441,7 @@ class NewsSelectorTests(unittest.TestCase):
             ["regional-supply-contract"],
         )
 
-    def test_keeps_natural_korean_summary_without_quality_retry(self):
+    def test_keeps_complete_natural_korean_summary_without_quality_retry(self):
         source = article(
             "market-rise",
             "Wall Street rises on hopes of Middle East deal",
@@ -3452,7 +3454,7 @@ class NewsSelectorTests(unittest.TestCase):
                 "source_ref": "market-rise",
                 "source_title": "Wall Street rises on hopes of Middle East deal",
                 "title": "중동 갈등 완화 기대감으로 뉴욕증시 상승",
-                "content": "미국-이란 갈등 완화 기대감에 뉴욕증시 3대 지수 상승",
+                "content": "미국-이란 갈등 완화 기대감에 뉴욕증시 3대 지수가 상승했습니다.",
                 "importance_score": 7,
                 "category": "market",
                 "news_type": "new_development",
@@ -4985,11 +4987,12 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(selected, [])
 
     def test_response_schema_allows_complete_titles_up_to_fifty_five_characters(self):
-        title_schema = NEWS_SELECTION_RESPONSE_FORMAT["json_schema"]["schema"][
+        properties = NEWS_SELECTION_RESPONSE_FORMAT["json_schema"]["schema"][
             "items"
-        ]["properties"]["title"]
+        ]["properties"]
 
-        self.assertEqual(title_schema["maxLength"], 55)
+        self.assertEqual(properties["title"]["maxLength"], 55)
+        self.assertNotIn("maxLength", properties["content"])
         self.assertIn("policy", SELECTABLE_CATEGORIES)
 
 if __name__ == "__main__":

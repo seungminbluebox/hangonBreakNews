@@ -61,7 +61,7 @@ SUMMARY_RESPONSE_FORMAT = {
                     "temp_id": {"type": "integer"},
                     "source_ref": {"type": "string"},
                     "title": {"type": "string", "maxLength": 55},
-                    "content": {"type": "string", "maxLength": 110},
+                    "content": {"type": "string"},
                 },
                 "required": ["temp_id", "source_ref", "title", "content"],
                 "additionalProperties": False,
@@ -167,9 +167,11 @@ transaction relationships. Do not invent analysis, forecasts, conversions, or ma
 Return only a JSON array with exactly temp_id, source_ref, title, and content. Copy temp_id
 and source_ref exactly. Translate naturally into Korean, explain unfamiliar acronyms and
 units, preserve every important title number in content with the same meaning, and keep
-certainty and actor relationships unchanged. Title must be complete and <=55 characters;
-content must be a polite news report ending naturally, 1-2 sentences and <=110 Korean
-characters, reporting the core fact first. Omit an item if it cannot be summarized faithfully.
+certainty and actor relationships unchanged. Title must be complete and <=55 characters.
+Content should normally stay within 110 Korean characters, but never cut a word or sentence
+to meet that target. If more space is necessary, return the complete summary unchanged. Use
+1-2 polite Korean news-reporting sentences, report the core fact first, and end every summary
+with a complete formal ending and punctuation. Omit an item if it cannot be summarized faithfully.
 
 ITEMS:
 {json.dumps(payload, ensure_ascii=False)}
