@@ -100,6 +100,22 @@ class ImportanceNormalizationTests(unittest.TestCase):
 
 
 class GNewsCycleTests(unittest.TestCase):
+    def test_source_fallback_is_disclosed_in_cycle_counters(self):
+        source = article()
+        outputs = []
+        result = PipelineResult(selected=[selected(source)], source_fallbacks=1)
+        with patch("gnews_tracker.run_two_stage_pipeline", return_value=result):
+            stats = run_simple_cycle(
+                object(), Mock(), FakeRepository(), Mock(), TrackerState(),
+                collector=Mock(return_value=[source]),
+                clock=lambda: datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+                sleeper=Mock(), output=outputs.append,
+            )
+        self.assertEqual(stats.get("source_fallbacks"), 1)
+        cycle_summary = next(line for line in outputs if "event=cycle_summary" in line)
+        self.assertIn("source_fallbacks=1", cycle_summary)
+        self.assertIn("status=partial", cycle_summary)
+
     def test_simple_cycle_does_not_reprocess_prior_pending_and_uses_two_stage_result(self):
         source = article()
         state = TrackerState(pending={"https://example.com/old": article("old", "https://example.com/old")})

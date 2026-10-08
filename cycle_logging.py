@@ -181,6 +181,7 @@ class CycleLogContext:
             "rejected": self.stats.get("rejected", 0),
             "cut": self.stats.get("cut", 0),
             "quality_failed": self.stats.get("quality_failed", 0),
+            "source_fallbacks": self.stats.get("source_fallbacks", 0),
             "ai_calls": self.stats.get("ai_calls", 0),
             "retries": self.stats.get("retries", 0),
             "ai_failures": self.stats.get("ai_failures", 0),

@@ -463,6 +463,7 @@ def _run_simple_cycle(
         "ai_blocked": 0,
         "db_failures": 0,
         "quality_failed": 0,
+        "source_fallbacks": 0,
         "notify_failures": 0,
         "fetch_failures": 0,
         "cut": 0,
@@ -538,6 +539,7 @@ def _run_simple_cycle(
     stats["cut"] = len(result.cut_urls)
     stats["selected"] = len(result.selected)
     stats["quality_failed"] = getattr(result, "quality_failed", 0)
+    stats["source_fallbacks"] = getattr(result, "source_fallbacks", 0)
     stats["rejected"] += len(result.evaluated_urls)
     context = current_context()
     if context is not None and result.selected:
@@ -608,7 +610,7 @@ def run_simple_cycle(*args, **kwargs):
             context.set_status(
                 "partial" if context.stats.get("fetched") else "fetch_failed"
             )
-        elif context.stats.get("quality_failed"):
+        elif context.stats.get("quality_failed") or context.stats.get("source_fallbacks"):
             context.set_status("partial")
         elif not context.stats.get("candidates"):
             context.set_status("empty")

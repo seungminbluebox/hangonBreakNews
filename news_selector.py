@@ -257,7 +257,7 @@ MACRO_SOURCE_TERMS = (
 )
 SOURCE_GEOGRAPHY_PATTERNS = (
     (r"\bnorth korea\b", ("북한", "조선민주주의인민공화국")),
-    (r"\b(?:south korea|republic of korea|korea)\b", ("한국", "대한민국", "국내")),
+    (r"\b(?:south korea|republic of korea|(?<!north )korea)\b", ("한국", "대한민국", "국내")),
     (r"\b(?:united states|u\.s\.?|us)\b", ("미국",)),
     (r"\bchina\b", ("중국",)),
     (r"\bjapan\b", ("일본",)),
@@ -274,6 +274,11 @@ SOURCE_GEOGRAPHY_PATTERNS = (
     (r"\bindonesia\b", ("인도네시아",)),
     (r"\bmalaysia\b", ("말레이시아",)),
     (r"\bnigeria\b", ("나이지리아",)),
+    (r"\bzambia\b", ("잠비아",)),
+    (r"\bzimbabwe\b", ("짐바브웨",)),
+    (r"\bslovakia\b", ("슬로바키아",)),
+    (r"\bslovenia\b", ("슬로베니아",)),
+    (r"\bsouth africa\b", ("남아프리카공화국", "남아공")),
     (r"\bpakistan\b", ("파키스탄",)),
     (r"\bbrazil\b", ("브라질",)),
     (r"\bmexico\b", ("멕시코",)),
@@ -2436,7 +2441,163 @@ def _missing_source_geography(
     return False
 
 
-def _is_valid_report_summary(content: str) -> bool:
+def _source_entity_anchors(article: dict) -> list[dict]:
+    """Recognized headline identities only; body background need not be repeated.
+
+    This is a bounded alias check, not named-entity recognition or an entailment
+    model. It deliberately never guesses the Korean name of an unknown entity.
+    """
+    headline = article.get("raw_title") or ""
+    patterns = (*SOURCE_GEOGRAPHY_PATTERNS, (r"\btesla\b", ("테슬라",)))
+    compound_patterns = (
+        (r"\bbank of japan\b", "일본은행"),
+        (r"\b(?:bank of korea|south korea(?:'s)? central bank)\b", "한국은행"),
+        (r"\btesla korea\b", "테슬라코리아"),
+    )
+    compounds = [
+        (match, alias)
+        for pattern, alias in compound_patterns
+        for match in re.finditer(pattern, headline, flags=re.IGNORECASE)
+    ]
+    anchors = []
+    for pattern, aliases in patterns:
+        match = re.search(pattern, headline, flags=re.IGNORECASE)
+        if match:
+            names = list(aliases)
+            # Permit only established compounds literally backed by this
+            # headline span, never arbitrary suffixes on a country/company.
+            names.extend(alias for compound, alias in compounds
+                         if compound.start() <= match.start() and match.end() <= compound.end())
+            anchors.append({"source": match.group(), "korean_names": names})
+    return anchors
+
+
+def _has_korean_entity_alias(alias: str, text: str) -> bool:
+    # A particle may follow a Korean name, but another name may not: 인도 is
+    # not a match inside 인도네시아. Keep ordinary inflected news wording.
+    particles = r"(?:에서는|에는|으로부터|에서|으로|보다|부터|까지|은|는|이|가|을|를|의|에|로|와|과|도|만)?"
+    return bool(re.search(
+        rf"(?<![A-Za-z가-힣]){re.escape(alias)}{particles}(?![A-Za-z가-힣])", text,
+    ))
+
+
+def _missing_source_headline_entity(article: dict, title: str, content: str) -> bool:
+    summary = f"{title} {content}"
+    for anchor in _source_entity_anchors(article):
+        # Keeping the literal source name is safer than inventing a translation.
+        literal = re.search(
+            rf"(?<![A-Za-z]){re.escape(anchor['source'])}(?![A-Za-z])",
+            summary, flags=re.IGNORECASE,
+        )
+        korean_match = any(_has_korean_entity_alias(alias, summary) for alias in anchor["korean_names"])
+        if "미국" in anchor["korean_names"] and re.search(r"(?:^|[\s,])미(?:\s|·)", summary):
+            korean_match = True
+        if not literal and not korean_match:
+            return True
+    # Check known confusable names across title/body without expanding this
+    # bounded alias gate into a general geography inference classifier.
+    confusable_groups = ({"인도", "인도네시아"}, {"슬로바키아", "슬로베니아"}, {"잠비아", "짐바브웨"})
+    headline_names = {anchor["korean_names"][0] for anchor in _source_entity_anchors(article)}
+    checked_names = set().union(*(group for group in confusable_groups if group & headline_names))
+    if checked_names:
+        source = " ".join(article.get(field) or "" for field in (
+            "raw_title", "raw_description", "raw_content",
+        ))
+        for pattern, aliases in SOURCE_GEOGRAPHY_PATTERNS:
+            if aliases[0] not in checked_names:
+                continue
+            # 국내 is context-dependent and must not establish a conflicting
+            # country by itself. Explicit country names are unambiguous here.
+            names = [alias for alias in aliases if alias != "국내"]
+            if any(_has_korean_entity_alias(alias, summary) for alias in names):
+                if not re.search(pattern, source, flags=re.IGNORECASE) and not any(
+                    _has_korean_entity_alias(alias, source) for alias in names
+                ):
+                    return True
+    return False
+
+
+def _has_unsupported_investment_recommendation(article: dict, title: str, content: str) -> bool:
+    """Do not turn unrelated restrictions into investment-advice restrictions."""
+    generated = f"{title} {content}"
+    if not re.search(r"(?:투자|매수|매도)\s*(?:권유|추천)|투자\s*조언", generated):
+        return False
+    advice_pattern = (
+        r"(?:investment|stock|share|buy|sell)\s+(?:advice|recommendations?|solicitation)"
+        r"|(?:recommend(?:s|ed|ing)?|advis(?:e|es|ed|ing))\s+(?:buying|selling|investing)"
+        r"|(?:buy|sell)\s+rating|(?:투자|매수|매도)\s*(?:권유|추천|조언)"
+    )
+    restriction_pattern = r"restrict\w*|limit\w*|ban(?:ned|s)?|prohibit\w*|제한|금지|규제"
+    restriction_claim = bool(re.search(r"제한|금지|규제", generated))
+    country_names = {alias for _, aliases in SOURCE_GEOGRAPHY_PATTERNS for alias in aliases}
+    actors = [anchor for anchor in _source_entity_anchors(article)
+              if not country_names.intersection(anchor["korean_names"])]
+    for field in ("raw_title", "raw_description", "raw_content"):
+        for sentence in re.split(r"[.!?]\s*|\n+", article.get(field) or ""):
+            if re.search(
+                r"\b(?:not|never|no)\b.{0,50}\b(?:advice|recommendations?|solicitation)\b"
+                r"|(?:투자|매수|매도)\s*(?:권유|추천|조언).{0,30}(?:아니|않)",
+                sentence, flags=re.IGNORECASE,
+            ):
+                continue
+            if not re.search(advice_pattern, sentence, flags=re.IGNORECASE):
+                continue
+            if restriction_claim and not re.search(restriction_pattern, sentence, flags=re.IGNORECASE):
+                continue
+            # A recommendation about another company cannot support the
+            # recognized headline actor, even elsewhere in the same article.
+            if any(not re.search(rf"\b{re.escape(actor['source'])}\b", sentence, flags=re.IGNORECASE)
+                   and not any(_has_korean_entity_alias(alias, sentence) for alias in actor["korean_names"])
+                   for actor in actors):
+                continue
+            return False
+    return True
+
+
+def _has_unsupported_official_role(article: dict, title: str, content: str) -> bool:
+    source = " ".join(article.get(field) or "" for field in (
+        "raw_title", "raw_description", "raw_content",
+    ))
+    summary = f"{title} {content}"
+    roles = (
+        (r"(?<!부)총리", r"(?<!부)총리|\bprime minister\b|\bpremier\b"),
+        (r"(?<!부)대통령", r"(?<!부)대통령|(?<!vice )\bpresident(?:ial)?\b"),
+        (r"부통령", r"부통령|\bvice[- ]president\b"),
+    )
+    if not any(re.search(pattern, source, flags=re.IGNORECASE) for _, pattern in roles):
+        return False
+    return any(re.search(output_pattern, summary) and not re.search(
+        source_pattern, source, flags=re.IGNORECASE,
+    ) for output_pattern, source_pattern in roles)
+
+
+def _has_incorrect_source_claim_actor(article: dict, content: str) -> bool:
+    """Protect explicit Korean subjects of privacy statements in multi-actor news.
+
+    Ambiguous/pronominal source subjects are intentionally not guessed. This
+    bounded check supplements the generic actor-preservation prompt.
+    """
+    claim = r"개인정보|개인 정보|privacy|personal data"
+    if not re.search(claim, content, flags=re.IGNORECASE):
+        return False
+    actors = set()
+    for field in ("raw_description", "raw_content"):
+        for sentence in re.split(r"[.!?]\s*", article.get(field) or ""):
+            if not re.search(claim, sentence, flags=re.IGNORECASE):
+                continue
+            subject = re.match(r"\s*([A-Za-z가-힣0-9]{2,20})(?:은|는|이|가)\s", sentence)
+            if subject and subject.group(1) not in {"회사", "기업", "정부", "대표", "그", "이"}:
+                actors.add(subject.group(1))
+    if len(actors) != 1:
+        return False
+    actor = next(iter(actors))
+    return any(
+        re.search(claim, sentence, flags=re.IGNORECASE) and actor not in sentence
+        for sentence in re.split(r"[.!?]\s*", content)
+    )
+
+
+def _is_valid_report_summary(content: str, *, formal: bool = True) -> bool:
     normalized = content.strip().casefold()
     if "~" in content:
         return False
@@ -2444,15 +2605,27 @@ def _is_valid_report_summary(content: str) -> bool:
         return False
     if any(phrase in content for phrase in SUMMARY_FORBIDDEN_TEMPLATE_PHRASES):
         return False
-    if not re.search(r"니다[.!?](?:[\"'”’)}\]>〉》」』]*)$", content.strip()):
+    # Split punctuation even without spaces, while preserving decimal points.
+    # Quoted fragments inside a reporting sentence are not independent reports.
+    checked = re.sub(r'“[^”]*”|「[^」]*」|"[^"\n]*"', "인용문", content.strip())
+    sentences = re.split(r"(?<!\d)[.!?]+|[!?]+|[.]+(?!\d)", checked)
+    closers = " \t\r\n'’)}]>〉》」』"
+    sentences = [part.strip(closers) for part in sentences if part.strip(closers)]
+    if not 1 <= len(sentences) <= 2:
         return False
-
-    sentences = [
-        sentence.strip()
-        for sentence in re.split(r"(?<=[.!?])\s+", content.strip())
-        if sentence.strip()
-    ]
-    return 1 <= len(sentences) <= 2
+    ending = "니다" if formal else "다"
+    if not re.search(rf"{ending}[.!?](?:[\"'”’)}}\]>〉》」』]*)$", content.strip()):
+        return False
+    for sentence in sentences:
+        # An ending alone is not a sentence; every sentence needs a reporting
+        # clause and one complete ending, rather than an appended copula.
+        if not re.search(rf"[가-힣].+{ending}$", sentence):
+            return False
+        if re.fullmatch(r"(?:입니다|습니다|합니다|됩니다|했다|됐다|된다|한다)", sentence):
+            return False
+        if re.search(r"(?:니다|했다|됐다)\s*(?:입니다|습니다|합니다|됩니다)", sentence):
+            return False
+    return True
 
 
 INCOMPLETE_TITLE_ENDINGS = (
@@ -3711,6 +3884,14 @@ def _decision_to_item(
         return failed("incorrect_primary_transaction_actor")
     if _misstates_indirect_transaction_actor(articles[temp_id], title):
         return failed("incorrect_indirect_transaction_actor")
+    if _missing_source_headline_entity(articles[temp_id], title, content):
+        return failed("missing_source_entity")
+    if _has_unsupported_investment_recommendation(articles[temp_id], title, content):
+        return failed("unsupported_investment_recommendation")
+    if _has_unsupported_official_role(articles[temp_id], title, content):
+        return failed("unsupported_official_role")
+    if _has_incorrect_source_claim_actor(articles[temp_id], content):
+        return failed("incorrect_source_claim_actor")
     if _missing_source_geography(articles[temp_id], title, content, category):
         return failed("missing_source_geography")
     if not _is_valid_report_summary(content):

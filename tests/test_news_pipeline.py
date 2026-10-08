@@ -80,6 +80,7 @@ def summary(index):
         "source_ref": f"article-{index}",
         "title": f"{labels[index]}기업 {events[index]} 발표",
         "content": f"{labels[index]}기업이 {details[index]}",
+        "source_excerpt": f"The source reports a concrete economic event {index}.",
     }
 
 
@@ -301,6 +302,106 @@ class TwoStagePipelineTests(unittest.TestCase):
             call.kwargs["json"]["max_tokens"] == 8192
             for call in post.call_args_list
         ))
+
+
+class GroundedPipelineTests(unittest.TestCase):
+    """Synthetic fixtures exercise transport and validation, not live model quality."""
+    def run_one(self, source, generated):
+        generator = FakeGenerator([
+            json.dumps([selection(0)], ensure_ascii=False),
+            json.dumps(generated, ensure_ascii=False),
+        ])
+        return run_two_stage_pipeline([source], generator), generator
+
+    def test_requires_literal_provider_evidence_not_generated_reason(self):
+        source = article(0)
+        generated = summary(0)
+        generated["source_excerpt"] = "The invented source says something entirely different."
+        result, generator = self.run_one(source, [generated])
+        self.assertEqual(result.selected, [])
+        self.assertEqual(result.quality_reasons, {"invalid_source_excerpt": 1})
+        self.assertIn(source["original_url"], result.unevaluated_urls)
+        self.assertEqual(len(generator.prompts), 2)
+
+    def test_summary_prompt_contains_source_anchors_but_no_ai_selection_reason(self):
+        source = article(0)
+        source["raw_title"] = "Zambia approves copper mine expansion"
+        result, generator = self.run_one(source, [])
+        payload = json.loads(generator.prompts[1].split("ITEMS:\n", 1)[1])
+        self.assertNotIn("selection_reason", payload[0])
+        self.assertIn({"source": "Zambia", "korean_names": ["잠비아"]}, payload[0]["source_entities"])
+        self.assertIn("source_excerpt", SUMMARY_RESPONSE_FORMAT["json_schema"]["schema"]["items"]["required"])
+
+    def test_quality_failure_can_use_complete_korean_source_with_disclosure(self):
+        source = article(0)
+        source.update(raw_title="가기업 수도권 공장 증설 확정", raw_description="가기업이 수도권 공장 증설을 확정했습니다.", raw_content="가기업이 수도권 공장 증설을 확정했습니다.")
+        generated = {**summary(0), "content": "가기업이 공장을 증설했습니다.입니다.", "source_excerpt": source["raw_description"]}
+        result, generator = self.run_one(source, [generated])
+        self.assertEqual(result.selected[0]["normalized_title"], source["raw_title"])
+        self.assertEqual(result.selected[0]["normalized_content"], "원문 발췌: " + source["raw_description"])
+        self.assertEqual(result.source_fallbacks, 1)
+        self.assertEqual(result.quality_failed, 0)
+        self.assertEqual(len(generator.prompts), 2)
+
+    def test_missing_summary_is_explicit_quality_failure_or_source_fallback(self):
+        source = article(0)
+        result, _ = self.run_one(source, [])
+        self.assertEqual(result.quality_failed, 1)
+        self.assertEqual(result.quality_reasons, {"summary_omitted": 1})
+        source.update(raw_title="가기업 공장 증설 확정", raw_description="가기업이 공장 증설을 확정했습니다.")
+        result, _ = self.run_one(source, [])
+        self.assertEqual(result.source_fallbacks, 1)
+        self.assertEqual(len(result.selected), 1)
+
+    def test_truncated_korean_source_is_not_repaired_or_published_as_fallback(self):
+        source = article(0)
+        source.update(raw_title="가기업 공장 증설 확정", raw_description="가기업이 공장 증설을 확정하고", raw_content="가기업이 공장 증설을 확정하고 [123 chars]")
+        result, _ = self.run_one(source, [])
+        self.assertEqual(result.selected, [])
+        self.assertEqual(result.quality_failed, 1)
+        self.assertIn(source["original_url"], result.unevaluated_urls)
+
+    def test_duplicate_summary_ids_fail_contract_without_publishing(self):
+        result, _ = self.run_one(article(0), [summary(0), summary(0)])
+        self.assertEqual(result.selected, [])
+        self.assertIn(article(0)["original_url"], result.unevaluated_urls)
+
+
+class KoreanSourceFallbackTests(unittest.TestCase):
+    def test_quotes_complete_plain_style_source_without_rewriting_it(self):
+        source = article(0)
+        source.update(raw_title="테슬라코리아 FSD 안전 검증 협조 계획", raw_description="테슬라코리아가 국내 FSD 안전성 검증에 협조하기로 했다.", raw_content="")
+        generator = FakeGenerator([json.dumps([selection(0)]), "[]"])
+        result = run_two_stage_pipeline([source], generator)
+        self.assertEqual(len(result.selected), 1)
+        self.assertIn(source["raw_description"], result.selected[0]["normalized_content"])
+        self.assertTrue(result.selected[0]["normalized_content"].startswith("원문 발췌:"))
+        self.assertEqual(result.source_fallbacks, 1)
+
+    def test_rejects_bare_endings_inside_source_quote_fallback(self):
+        source = article(0)
+        source.update(raw_title="가기업 공장 증설 확정", raw_description="가기업이 공장 증설을 확정했다.입니다.", raw_content="")
+        result = run_two_stage_pipeline([source], FakeGenerator([json.dumps([selection(0)]), "[]"]))
+        self.assertEqual(result.selected, [])
+        self.assertEqual(result.quality_failed, 1)
+
+
+class ReviewedEvidenceBoundaryTests(unittest.TestCase):
+    def test_truncation_marker_is_not_substantive_source_evidence(self):
+        source = article(0)
+        source["raw_content"] = "The factory is expanding. [+12345 chars]"
+        generated = {**summary(0), "source_excerpt": "[+12345 chars]"}
+        result = run_two_stage_pipeline([source], FakeGenerator([json.dumps([selection(0)]), json.dumps([generated])]))
+        self.assertEqual(result.selected, [])
+        self.assertEqual(result.quality_reasons, {"invalid_source_excerpt": 1})
+
+    def test_rss_short_text_sentinel_is_not_substantive_source_evidence(self):
+        from news_pipeline import validate_legacy_summary
+        result = validate_legacy_summary({
+            "title": "테슬라 공장 증설", "content": "테슬라가 공장 증설을 발표했습니다.",
+            "source_excerpt": "TEXT_TOO_SHORT", "importance_score": 8, "category": "corporate",
+        }, {"id": 0, "title": "Tesla expands factory", "content_to_analyze": "TEXT_TOO_SHORT", "original_url": "https://example.com/a"})
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

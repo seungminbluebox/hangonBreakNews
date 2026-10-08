@@ -1,0 +1,50 @@
+{
+  "observed_at": "2026-10-08T23:17:00+09:00/2026-10-08T23:21:00+09:00",
+  "provenance": "Outputs were retained by the public /live DOM audit. Source passages below were checked through public web search on 2026-10-08; they are NOT captured GNews provider payloads. Constructed titles are labeled explicitly.",
+  "cases": [
+    {
+      "id": "zambia-solar-country",
+      "observed_title": "조바키아 2026년 태양광 1,000MW 목표 달성",
+      "observed_content": "조바키아가 2026년 태양광 발전 목표인 1,000MW를 달성했습니다. 총리 하치렘마가 대표 연설을 통해 지역 에너지 협력을 강조했습니다.",
+      "observed_source_url": "https://www.africa.com/apo/energy-forum-for-africa-zambia-hits-1000mw-solar-target",
+      "verified_source_url": "https://www.moe.gov.zm/?p=6475",
+      "source_kind": "primary-source corroboration; original syndicated URL inaccessible",
+      "source_title": "ENERGY FORUM FOR AFRICA: ZAMBIA HITS 1,000MW SOLAR TARGET",
+      "source_excerpt": "Zambia has attained its 1,000MW solar generation target for 2026",
+      "expected_reason": "missing_source_entity"
+    },
+    {
+      "id": "tesla-fsd-recommendation",
+      "observed_title": "테슬라코리아 FSD 검증에 적극 협조",
+      "observed_content": "테슬라코리아는 국내 FSD 안전성 검증을 위해 국토교통부와 협력하여 투자 권유를 제한했습니다. 서영득 대표는 현재 약 4만 5천 대가 FSD 기능을 사용할 수 있으며, 개인정보 보호를 철저히 준수할 것이라고 강조했습니다.",
+      "observed_source_url": "https://news.einfomax.co.kr/news/articleView.html?idxno=4438430",
+      "verified_source_url": "https://news.einfomax.co.kr/news/articleView.html?idxno=4438430",
+      "source_kind": "original publisher search excerpt; title constructed to avoid duplicating long source text",
+      "source_title": "테슬라코리아 FSD 안전 검증 협조 계획",
+      "source_excerpt": "테슬라코리아가 국내 FSD(완전자율주행) 안전성 검증을 위해 국토교통부에 적극 협조하기로 했다.",
+      "expected_reason": "unsupported_investment_recommendation",
+      "source_additional_excerpt": "서 대표에 따르면 국내에서 약 23만대 가운데 약 4만5천대가 FSD 기능을 사용할 수 있다."
+    },
+    {
+      "id": "india-duplicate-ending",
+      "observed_title": "인도 1조 달러 수출 목표 설정, 글로벌 무역 전략 강화",
+      "observed_content": "인도는 현재 회계연도에 1조 달러 규모의 수출을 목표로 설정했습니다.입니다.",
+      "observed_source_url": "https://www.devdiscourse.com/article/business/3988863-india-aims-for-usd-1-trillion-exports-in-fy27-despite-weak-global-trade-piyush-goyal",
+      "source_kind": "output-only sentence regression; original source not retrieved"
+    },
+    {
+      "id": "iraq-duplicate-ending",
+      "observed_title": "이집트-이라크 원유 수출 경로 변경, 호르무즈 지렛대 우회",
+      "observed_content": "이라크 정부가 시리아에 호르무즈 해협을 피하기 위해 오일 수출 경로를 변경해 요청했습니다.입니다.",
+      "observed_source_url": "https://www.middleeastmonitor.com/20261008-iraq-asks-syria-to-help-export-oil-via-its-territory-bypassing-strait-of-hormuz/",
+      "source_kind": "output-only sentence regression; source not retrieved"
+    },
+    {
+      "id": "oil-duplicate-ending",
+      "observed_title": "원유 가격 상승으로 석유 관련 주식 5% 하락",
+      "observed_content": "목요일 원유 가격이 급등해 석유 관련 주식들이 최대 5% 하락했습니다.입니다.",
+      "observed_source_url": "https://www.business-standard.com/markets/news/oil-on-a-boil-omcs-indigo-other-crude-sensitive-stocks-sink-up-to-5-126100800590_1.html",
+      "source_kind": "output-only sentence regression; source not retrieved"
+    }
+  ]
+}
