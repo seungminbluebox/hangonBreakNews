@@ -1,11 +1,22 @@
 # breaking_news.source_content deployment
 
+This document retains the original source-column rollout and its pre-removal SQL.
+The current title-only/removal preparation is governed by
+[the updated rollout](2026-10-10-headline-only-rollout.md) and the backend's manual
+`docs/product/breaking-news-title-only.md` procedure. The old `content` projection/grant
+below is historical; do not reapply it after a content-column DROP. Current Pulse
+detailed evidence reads source_content only, and current public title-only projections
+exclude content. Realtime application filtering does not prove transport privacy;
+source_content must remain denied to public roles, with live payload verification
+performed separately under operational approval.
+
 ## Scope
 
 The GNews collector already receives provider `content` once and keeps it as
 `raw_content`. New rows preserve that exact value in the private
-`breaking_news.source_content` column. New title-only collections write an empty compatibility string to
-`breaking_news.content`; historical summaries remain unchanged. See
+`breaking_news.source_content` column. New title-only collections default to an empty compatibility string in
+`breaking_news.content` (`BREAKING_NEWS_CONTENT_COLUMN_MODE=legacy`). After separately approved expand/default preparation,
+`omit` writes exclude that column entirely; historical summaries remain unchanged. See
 [the current rollout contract](2026-10-10-headline-only-rollout.md).
 
 This change does not:

@@ -4057,13 +4057,13 @@ def select_and_summarize(
     *,
     batch_size: int = 10,
     recent_news: list[dict] | None = None,
-    headline_only: bool = False,
+    headline_only: bool = True,
 ) -> SelectionResult:
-    """Legacy list contract; worker defaults opt into headline-only mode."""
+    """Every default caller generates titles; False explicitly requests historical summaries."""
     if headline_only:
         # Preserve the callable/list contract for older worker integrations while
         # sharing the current title-only pipeline. The old summary implementation
-        # below remains solely for historical callers/tests, never worker defaults.
+        # below requires an explicit False for historical fixtures, never defaults.
         from news_pipeline import run_two_stage_pipeline
         result = run_two_stage_pipeline(articles, generator, recent_news=recent_news)
         return SelectionResult(result.selected, retryable_urls=result.unevaluated_urls)

@@ -126,7 +126,7 @@ df -h
 
 - **프로세스 명칭**: 기존 `tracker`는 `breaking-news`로 이름이 변경되었습니다-
 - **실행 파일**: `gnews_tracker.py`가 운영 파일이며 기본 5분 주기로 실행됩니다. `breaking_tracker.py`는 롤백용으로만 남겨 둡니다.
-- **DB compatibility**: 새 속보는 제목만 생성하고 `content`에 빈 문자열을 저장해 기존 NOT NULL 제약을 만족합니다. 비공개 `source_content` 원문은 Pulse용으로 유지합니다. 기존 행·DB 스키마는 변경하지 않습니다.
+- **DB compatibility**: `BREAKING_NEWS_CONTENT_COLUMN_MODE=legacy`(기본)는 제목만 생성하고 `content=''`를 명시해 현재 NOT NULL/기본값 없음 제약을 만족합니다. 승인된 expand/default 적용 후에만 `omit`으로 전환하면 INSERT에서 `content` 필드 자체를 생략합니다. 잘못된 모드는 차단하며 DB 오류 기반 자동 모드 전환·스키마 변경은 없습니다. 운영 GNews와 RSS 롤백 모두 같은 계약을 사용합니다. 플래그 변경·서버 재시작·실제 DROP은 별도 승인 작업입니다.
 - **Source-content deployment**: Apply the privacy prerequisite and migration in [docs/breaking-news-source-content-deployment.md](docs/breaking-news-source-content-deployment.md) before restarting `gnews_tracker.py`.
 - **카테고리**: `market`, `indicator`, `geopolitics`, `corporate`에 `policy`가 추가됐습니다. `policy`는 법률·세제·정부 정책과 시장·산업·다수 기업 또는 소비자에게 적용되는 규제이며, 특정 기업만 대상으로 한 규제 집행은 `corporate`입니다.
 - **배포 전 DB 확인**: 이 저장소에는 `category` CHECK 제약 마이그레이션이 없습니다. 운영 DB에서 아래 쿼리로 제약을 확인하고, 허용값이 고정돼 있으면 `policy`를 추가하는 별도 검토된 마이그레이션을 먼저 적용하세요.
@@ -155,9 +155,9 @@ where conrelid = 'public.breaking_news'::regclass
 - **로그 보관**: 이번 변경은 애플리케이션 출력 통합입니다. 서버 로그 회전·파일 크기·보관 기간 설정은 별도 운영 작업이며 변경하지 않았습니다.
 - **속보 기준**: 기사 종류와 관계없이 영향 범위·변화 규모·시장 즉시성 중 두 가지 이상을 강하게 충족하면 9점 속보, 세 가지 모두 충족하며 세계 시장이나 금융시스템에 충격을 줄 수 있을 때만 10점으로 분류합니다. 일반 실적·기업 인수·지분 매각·규제 심사 보류·단순 지수 최고치와 구체적인 새 조치나 즉각적인 충격이 없는 산업 동향·전망은 최대 8점입니다.
 - **알림 기준**: 중요도 7~8은 `breaking_news`, 9~10은 `breaking_news`와 `important_breaking_news` 구독자에게 중복 없이 발송합니다.
-- **Pulse 계약**: 제목으로 후보를 고르고 비공개 `source_content` 원문과 `original_url`을 활용합니다. 원문이 없는 기존 행의 `content` fallback 호환은 백엔드에서 유지해야 합니다. [제목 전용 배포 순서](docs/2026-10-10-headline-only-rollout.md)를 참고하세요. 실제 본문 열 삭제는 사용처 제거·백업/복구 검증 후 별도 승인 작업입니다.
+- **Pulse·중복 계약**: 비공개 `source_content` 원문은 Pulse 근거와 내부 중복 비교에만 사용합니다. 중복 DB 조회는 `content`를 읽지 않고 원문 없으면 제목만 비교합니다. Pulse의 원문 없는 옛 행은 상세 근거를 제공하지 않으며 생성요약을 원문으로 위장하지 않습니다. 기존 생성요약 보존/복원은 별도 비공개 아카이브·백업 승인 작업입니다. [제목 전용 배포 순서](docs/2026-10-10-headline-only-rollout.md)를 참고하세요.
 - **필수 환경 변수 이름**: `GNEWS_API_KEY`, `OPENROUTER_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`
-- **선택 환경 변수 이름**: `GNEWS_AI_MODEL_NAME`, `GNEWS_AI_BACKUP_MODEL`, `GNEWS_DAILY_SAFETY_LIMIT`, `OPENROUTER_FREE_DAILY_LIMIT`, `OPENROUTER_BUDGET_PATH`, `REVALIDATE_SECRET`, `FRONTEND_URL`, `FIREBASE_CREDENTIALS`
+- **선택 환경 변수 이름**: `BREAKING_NEWS_CONTENT_COLUMN_MODE`(`legacy|omit`, 기본 `legacy`), `GNEWS_AI_MODEL_NAME`, `GNEWS_AI_BACKUP_MODEL`, `GNEWS_DAILY_SAFETY_LIMIT`, `OPENROUTER_FREE_DAILY_LIMIT`, `OPENROUTER_BUDGET_PATH`, `REVALIDATE_SECRET`, `FRONTEND_URL`, `FIREBASE_CREDENTIALS`
 - **OpenRouter 무료 요청 예산**: 무료 모델(`openrouter/free` 및 `:free`)은 기본 UTC 일일 990회와 5분 슬롯별 분할 한도를 공유합니다. 예산 DB 기본 경로는 프로젝트의 `.openrouter-budget.sqlite3`이며, 여러 프로세스가 같은 파일을 사용해야 사용량과 429 차단을 공유합니다. 예산 초과·429 차단은 현재 회차를 종료하며 기사는 다음 수집에서 다시 평가합니다.
 - **OpenRouter 단계 토큰**: `GNEWS_SELECTION_MAX_TOKENS`와 기존 호환 이름 `GNEWS_SUMMARY_MAX_TOKENS`는 각각 선별·제목 단계 토큰 한도이며 기본값은 8192입니다. 무료 모델 제한과 유료 fallback 금지를 유지합니다.
 - **수동 푸시 테스트**: `push_notification.py`를 직접 실행할 때는 `TEST_FCM_TOKEN` 환경변수로 대상 기기를 지정합니다. 토큰은 소스나 로그에 저장하지 않습니다.

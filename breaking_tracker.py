@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+from breaking_news_storage import get_content_column_mode, prepare_breaking_news_row, recent_duplicate_context
 from supabase import create_client, Client
 from newspaper import Article, Config
 
@@ -24,6 +25,7 @@ from revalidate import revalidate_path
 import random
 
 load_dotenv()
+CONTENT_COLUMN_MODE = get_content_column_mode()
 
 # 환경 변수 및 설정
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -119,10 +121,10 @@ def is_already_saved(url):
 
 
 def get_recent_news_list():
-    """DB에서 최근 500개의 속보 제목과 내용을 함께 가져옵니다."""
+    """최근 제목과 비공개 원문만 중복 근거로 읽습니다."""
     try:
-        res = supabase.table("breaking_news").select("title, content").order("created_at", desc=True).limit(500).execute()
-        return [{"title": item['title'], "content": item['content']} for item in res.data]
+        res = supabase.table("breaking_news").select("title,source_content").order("created_at", desc=True).limit(500).execute()
+        return [recent_duplicate_context(item) for item in (res.data or [])]
     except Exception as e:
         print(f"Error fetching recent news: {e}")
         return []
@@ -542,13 +544,13 @@ def save_and_notify(news_item):
             return
 
         # 1. DB 저장
-        data = {
+        data = prepare_breaking_news_row({
             "title": title,
-            "content": content,
+            "source_content": news_item.get("source_content"),
             "importance_score": score,
             "category": category,
             "original_url": url
-        }
+        }, mode=CONTENT_COLUMN_MODE)
         
         supabase.table("breaking_news").insert(data).execute()
         print(f"🚀 New Breaking News Saved: {title} (Score: {score})")
@@ -642,7 +644,7 @@ def main():
                             save_and_notify(item)
                             
                             # 방금 발송한 속보를 현재 리스트에도 추가하여, 같은 배치 내 연속 중복도 완벽하게 차단
-                            recent_news_list.append({"title": item['title'], "content": item.get('content', '')})
+                            recent_news_list.append(recent_duplicate_context(item))
                             
                         # 전체 과정이 에러 없이 무사히 완료된 경우에만 이번 후보들을 중복 메모리에 추가 (누락 방지)
                         final_urls = {item.get("original_url") for item in final_items}

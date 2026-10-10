@@ -411,7 +411,7 @@ class GNewsCycleTests(unittest.TestCase):
             [
                 {
                     "title": first_selected["normalized_title"],
-                    "content": first_selected["normalized_content"],
+                    "content": first_selected["raw_content"],
                 }
             ],
         )
@@ -736,7 +736,7 @@ class ExistingContractTests(unittest.TestCase):
             data=[
                 {
                     "title": "기존 뉴스",
-                    "content": "기존 뉴스 내용입니다.",
+                    "source_content": "기존 뉴스 원문입니다.",
                     "created_at": "2026-08-03T01:00:00+00:00",
                 }
             ]
@@ -750,7 +750,7 @@ class ExistingContractTests(unittest.TestCase):
 
         self.assertEqual(result[0]["title"], "기존 뉴스")
         client.table.assert_called_once_with("breaking_news")
-        query.select.assert_called_once_with("title,content,created_at")
+        query.select.assert_called_once_with("title,source_content,created_at")
         query.gte.assert_called_once_with("created_at", since.isoformat())
         query.order.assert_called_once_with("created_at", desc=True)
         query.limit.assert_called_once_with(100)

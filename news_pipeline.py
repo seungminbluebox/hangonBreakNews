@@ -10,6 +10,7 @@ import re
 from openrouter_budget import OpenRouterBudgetError
 from llm_helper import AIRequestError
 from cycle_logging import current_context, log_event, record_failure, record_retry
+from breaking_news_storage import private_source
 from news_selector import (
     SELECTABLE_CATEGORIES,
     SELECTABLE_NEWS_TYPES,
@@ -368,6 +369,9 @@ def validate_legacy_headline(result, original_data):
         "content": item["normalized_content"], "importance_score": item["importance_score"],
         "category": item["category"], "original_url": original_data["original_url"],
         "image_url": original_data.get("image_url") or "",
+        # RSS extraction is original evidence, never the model's output body.
+        "source_content": private_source(article["raw_content"])
+            if article["raw_content"] != "TEXT_TOO_SHORT" else None,
     }
 
 

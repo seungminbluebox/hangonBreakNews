@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from functools import partial
 import json
 import unittest
 
@@ -8,6 +9,10 @@ from news_selector import (
     select_and_summarize,
 )
 from openrouter_budget import OpenRouterRequestBlocked
+
+# Preserve historical summary-quality regression fixtures with an explicit opt-in.
+# Default callers are independently tested against the title-only pipeline.
+select_and_summarize = partial(select_and_summarize, headline_only=False)
 
 
 class FakeGenerator:

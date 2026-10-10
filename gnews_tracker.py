@@ -19,7 +19,7 @@ from gnews_adapter import (
     ScheduledHeadlineCollector,
     collect_default_headlines,
 )
-from news_selector import NEWS_SELECTION_RESPONSE_FORMAT, select_and_summarize
+from news_selector import select_and_summarize
 from news_pipeline import (
     SELECTION_RESPONSE_FORMAT,
     HEADLINE_RESPONSE_FORMAT,
@@ -27,6 +27,13 @@ from news_pipeline import (
 )
 from openrouter_budget import OpenRouterBudgetError, is_free_model
 from cycle_logging import cycle_scope, current_context, log_event
+from breaking_news_storage import (
+    CONTENT_COLUMN_MODE_ENV,
+    get_content_column_mode,
+    prepare_breaking_news_row,
+    private_source,
+    recent_duplicate_context,
+)
 
 
 select_headlines = partial(select_and_summarize, headline_only=True)
@@ -100,29 +107,25 @@ def normalize_importance(value) -> int:
     return min(10, max(7, rounded))
 
 
-def to_breaking_news_row(news_item: dict) -> dict:
-    """Map one selected article to the existing breaking_news DB schema."""
-    raw_content = news_item.get("raw_content")
-    source_content = (
-        raw_content
-        if isinstance(raw_content, str) and raw_content.strip()
-        else None
-    )
-    return {
+def to_breaking_news_row(news_item: dict, *, content_column_mode=None) -> dict:
+    """Map selected facts using the explicitly configured schema contract."""
+    return prepare_breaking_news_row({
         "title": news_item["normalized_title"],
-        # Compatibility with the existing NOT NULL column; no generated body.
-        "content": "",
         "importance_score": normalize_importance(news_item["importance_score"]),
         "category": news_item["category"],
         "original_url": news_item["original_url"],
-        "source_content": source_content,
-    }
+        "source_content": private_source(news_item.get("raw_content")),
+    }, mode=content_column_mode)
 
 
 class SupabaseBreakingNewsRepository:
     """Exact-URL idempotency and writes for the existing breaking_news table."""
 
-    def __init__(self, client, *, query_chunk_size=100):
+    def __init__(self, client, *, query_chunk_size=100, content_column_mode=None):
+        self.content_column_mode = (
+            get_content_column_mode() if content_column_mode is None
+            else get_content_column_mode({CONTENT_COLUMN_MODE_ENV: content_column_mode})
+        )
         self.client = client
         self.query_chunk_size = query_chunk_size
 
@@ -149,20 +152,16 @@ class SupabaseBreakingNewsRepository:
     def recent_news(self, since: datetime, limit=RECENT_DUPLICATE_LIMIT) -> list[dict]:
         response = (
             self.client.table("breaking_news")
-            .select("title,content,created_at")
+            .select("title,source_content,created_at")
             .gte("created_at", since.isoformat())
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
         )
         return [
-            {
-                "title": row.get("title") or "",
-                "content": row.get("content") or "",
-                "created_at": row.get("created_at"),
-            }
+            recent_duplicate_context(row)
             for row in (response.data or [])
-            if row.get("title") or row.get("content")
+            if row.get("title") or private_source(row.get("source_content"))
         ]
 
     def save(self, news_item: dict) -> bool:
@@ -170,7 +169,7 @@ class SupabaseBreakingNewsRepository:
         if self.existing_urls([url]):
             return False
         self.client.table("breaking_news").insert(
-            to_breaking_news_row(news_item)
+            to_breaking_news_row(news_item, content_column_mode=self.content_column_mode)
         ).execute()
         return True
 
@@ -362,7 +361,7 @@ def run_cycle(
             recent_news.append(
                 {
                     "title": selected_item["normalized_title"],
-                    "content": selected_item["normalized_content"],
+                    "content": private_source(selected_item.get("raw_content")) or "",
                 }
             )
             try:
@@ -755,6 +754,7 @@ def run_production(
     output=print,
 ):
     """Build live dependencies lazily, then start the production loop."""
+    content_column_mode = get_content_column_mode(environment)
     from supabase import create_client
     from push_notification import send_push_notification
     from revalidate import revalidate_path
@@ -763,7 +763,7 @@ def run_production(
         environment["SUPABASE_URL"],
         environment["SUPABASE_KEY"],
     )
-    repository = SupabaseBreakingNewsRepository(supabase)
+    repository = SupabaseBreakingNewsRepository(supabase, content_column_mode=content_column_mode)
     publisher = partial(
         publish_breaking_news,
         revalidate=revalidate_path,
