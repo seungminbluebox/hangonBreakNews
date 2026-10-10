@@ -17,6 +17,18 @@ from gnews_tracker import (
 
 
 class GNewsDryRunTests(unittest.TestCase):
+    def test_default_preview_uses_one_current_fetch_pipeline_and_never_outputs_body(self):
+        from news_pipeline import PipelineResult
+        outputs = []
+        with patch("gnews_tracker._filter_pipeline_candidates", return_value=([{"id": "candidate"}], set())), patch(
+            "gnews_tracker.run_two_stage_pipeline", return_value=PipelineResult()
+        ) as pipeline:
+            run_dry_run(
+                "test-key", Mock(), client_factory=Mock(), collector=Mock(return_value=[]),
+                output=outputs.append,
+            )
+        pipeline.assert_called_once()
+        self.assertEqual(json.loads(outputs[-1]), [])
     def test_stage_generator_passes_stage_schema_and_token_budget(self):
         with patch("llm_helper.safe_generate_content") as safe_generate_content:
             generator = _build_generator(
@@ -41,7 +53,7 @@ class GNewsDryRunTests(unittest.TestCase):
         self.assertEqual(summary_call.kwargs["max_tokens"], 4096)
         self.assertEqual(
             summary_call.kwargs["response_format"]["json_schema"]["name"],
-            "news_summary",
+            "news_headlines",
         )
 
     def test_stage_generator_rejects_paid_models_and_invalid_token_budget(self):
@@ -118,7 +130,6 @@ class GNewsDryRunTests(unittest.TestCase):
                     "source_name": "Example News",
                     "published_at": "2026-08-03T01:00:00+00:00",
                     "title": "미국 경제 새 소식 📊",
-                    "content": "새롭게 확인된 경제 사실을 발표했다.",
                     "importance_score": 6,
                     "category": "indicator",
                     "news_type": "official_announcement",

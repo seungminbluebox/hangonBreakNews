@@ -4,8 +4,9 @@
 
 The GNews collector already receives provider `content` once and keeps it as
 `raw_content`. New rows preserve that exact value in the private
-`breaking_news.source_content` column. The user-facing
-`breaking_news.content` column remains the normalized Korean summary.
+`breaking_news.source_content` column. New title-only collections write an empty compatibility string to
+`breaking_news.content`; historical summaries remain unchanged. See
+[the current rollout contract](2026-10-10-headline-only-rollout.md).
 
 This change does not:
 

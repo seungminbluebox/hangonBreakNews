@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from gnews_tracker import GNewsStageGenerator
-from news_pipeline import SUMMARY_RESPONSE_FORMAT, run_two_stage_pipeline
+from news_pipeline import HEADLINE_RESPONSE_FORMAT, run_two_stage_pipeline
 from cycle_logging import cycle_scope
 
 
@@ -79,7 +79,6 @@ def summary(index):
         "temp_id": index,
         "source_ref": f"article-{index}",
         "title": f"{labels[index]}기업 {events[index]} 발표",
-        "content": f"{labels[index]}기업이 {details[index]}",
         "source_excerpt": f"The source reports a concrete economic event {index}.",
     }
 
@@ -153,13 +152,10 @@ class TwoStagePipelineTests(unittest.TestCase):
         self.assertEqual(len(result.selected), 1)
         self.assertEqual(len(generator.prompts), 3)
 
-    def test_rejects_summary_that_ends_mid_sentence(self):
+    def test_rejects_headline_that_ends_mid_clause(self):
         source = article(0)
         incomplete = summary(0)
-        incomplete["content"] = (
-            "가기업이 수도권 생산시설 증설을 확정하고 내년부터 생산량을 "
-            "단계적으로 늘릴"
-        )
+        incomplete["title"] = "가기업 공장 확장을 위해"
         generator = FakeGenerator([
             json.dumps([selection(0)], ensure_ascii=False),
             json.dumps([incomplete], ensure_ascii=False),
@@ -171,7 +167,7 @@ class TwoStagePipelineTests(unittest.TestCase):
         self.assertEqual(result.quality_failed, 1)
         self.assertIn(source["original_url"], result.unevaluated_urls)
 
-    def test_preserves_complete_summary_over_one_hundred_ten_characters(self):
+    def test_generates_only_headline_and_keeps_body_empty(self):
         source = article(0)
         complete_content = (
             "가기업은 공급망 안정과 생산 능력 확대를 위해 수도권 공장 증설 계획을 "
@@ -180,19 +176,157 @@ class TwoStagePipelineTests(unittest.TestCase):
         )
         self.assertGreater(len(complete_content), 110)
         complete = summary(0)
-        complete["content"] = complete_content
         generator = FakeGenerator([
             json.dumps([selection(0)], ensure_ascii=False),
             json.dumps([complete], ensure_ascii=False),
         ])
 
         result = run_two_stage_pipeline([source], generator)
-        content_schema = SUMMARY_RESPONSE_FORMAT["json_schema"]["schema"][
+        content_schema = HEADLINE_RESPONSE_FORMAT["json_schema"]["schema"][
             "items"
-        ]["properties"]["content"]
+        ]["properties"]
 
-        self.assertNotIn("maxLength", content_schema)
-        self.assertEqual(result.selected[0]["normalized_content"], complete_content)
+        self.assertNotIn("content", content_schema)
+        self.assertEqual(result.selected[0]["normalized_content"], "")
+        self.assertIn("Do not generate a body or summary", generator.prompts[1])
+        self.assertIn(source["raw_content"], generator.prompts[1])
+
+    def test_preserves_disaster_count_roles_and_rejects_affected_as_deaths(self):
+        source = article(0)
+        source.update(raw_title="Thailand floods affect 3,158,615 people; 53 dead",
+                      raw_description="Floods affected 3,158,615 people and killed 53 people.",
+                      raw_content="Officials report 3,158,615 people affected and 53 deaths.")
+        for title, accepted in (
+            ("태국 홍수, 3,158,615명 피해·53명 사망", True),
+            ("태국 홍수, 315만8615명 피해·53명 사망", True),
+            ("태국 홍수로 3,158,615명 사망", False),
+            ("태국 홍수로 315만8615명 사망", False),
+            ("태국 홍수, 사망자 3,158,615명", False),
+            ("태국 홍수, 3,158,615명 피해·54명 사망", False),
+            ("미국 홍수, 3,158,615명 피해·53명 사망", False),
+        ):
+            with self.subTest(title=title):
+                generator = FakeGenerator([
+                    json.dumps([selection(0)]),
+                    json.dumps([{**summary(0), "title": title, "source_excerpt": source["raw_content"]}], ensure_ascii=False),
+                ])
+                result = run_two_stage_pipeline([source], generator)
+                self.assertEqual(bool(result.selected), accepted)
+
+    def test_preserves_uncertainty_in_headline(self):
+        source = article(0)
+        source.update(raw_title="US may intervene in yen market",
+                      raw_description="Possible US intervention is under consideration.",
+                      raw_content="Officials are considering intervention; no decision has been made.")
+        for title, accepted in (("미국, 엔화 시장 개입 검토", True),
+                                ("미국, 엔화 시장 개입 확정", False)):
+            with self.subTest(title=title):
+                result = run_two_stage_pipeline([source], FakeGenerator([
+                    json.dumps([selection(0)]),
+                    json.dumps([{**summary(0), "title": title, "source_excerpt": source["raw_content"]}], ensure_ascii=False),
+                ]))
+                self.assertEqual(bool(result.selected), accepted)
+
+    def test_casualty_count_roles_cover_inflections_particles_and_unknown_phrases(self):
+        source = article(0)
+        source.update(raw_title="Thailand floods affect 3,158,615 people; 53 dead",
+                      raw_description="Floods affected 3,158,615 people and killed 53 people.",
+                      raw_content="Officials report 3,158,615 people affected and 53 deaths.")
+        for title, accepted in (
+            ("태국 홍수, 315만8615명 숨져", False),
+            ("태국 홍수로3,158,615명이목숨을잃어", False),
+            ("태국 홍수, 315만8615명 숨졌다", False),
+            ("태국 홍수, 315만8615명이 생명을 잃었다", False),
+            ("태국 홍수, 315만8615명 숨을 거둬", False),
+            ("태국 홍수, 315만8615명 유명을 달리해", False),
+            ("태국 홍수, 315만8615명은 사망", False),
+            ("태국 홍수, 53명 다쳐", False),
+            ("태국 홍수, 53명 긴급 대피", False),
+            ("태국 홍수, 315만8615명 희생", False),
+            ("태국 홍수, 315만8615명", False),
+            ("태국 홍수, 315만8615명 피해·315만8615명 희생", False),
+            ("태국 홍수, 사망자 3,158,615", False),
+            ("태국 홍수로 3,158,615여 명 숨져", False),
+            ("태국 홍수로 315만8615여명 숨져", False),
+            ("태국 홍수, 사망자 거의 3,158,615", False),
+            ("태국 홍수, 315만8615명 피해·53명 숨져", True),
+            ("태국 홍수, 315만8615명 피해·53명이 목숨을 잃어", True),
+            ("태국 홍수, 315만8615명 피해·53명은 사망", True),
+            ("태국 홍수, 315만8615명은 피해·53명 숨져", True),
+            ("태국 홍수, 사망자 53", True),
+            ("태국 홍수, 53명의 사망자가 발생", True),
+        ):
+            with self.subTest(title=title):
+                result = run_two_stage_pipeline([source], FakeGenerator([
+                    json.dumps([selection(0)]),
+                    json.dumps([{**summary(0), "title": title,
+                                 "source_excerpt": source["raw_content"]}], ensure_ascii=False),
+                ]))
+                self.assertEqual(bool(result.selected), accepted)
+
+    def test_casualty_count_parser_does_not_treat_damage_amount_as_people(self):
+        source = article(0)
+        source.update(raw_title="Thailand floods: 53 deaths",
+                      raw_description="Thailand floods caused 53 deaths.",
+                      raw_content="Officials report 피해 2조 원 and 53 deaths.")
+        result = run_two_stage_pipeline([source], FakeGenerator([
+            json.dumps([selection(0)]),
+            json.dumps([{**summary(0), "title": "태국 홍수 피해 2조 원·53명 사망",
+                         "source_excerpt": source["raw_content"]}], ensure_ascii=False),
+        ]))
+        self.assertEqual(len(result.selected), 1)
+
+    def test_preserves_reporting_period_and_numeric_direction(self):
+        source = article(0)
+        source.update(raw_title="US July unemployment rate rises to 4.3%",
+                      raw_description="US July unemployment rate rises to 4.3%.",
+                      raw_content="The US July unemployment rate increased to 4.3%.")
+        for title, accepted in (("미국 7월 실업률 4.3%로 상승", True),
+                                ("미국 7월 실업률 4.3%로 하락", False),
+                                ("미국 6월 실업률 4.3%로 상승", False),
+                                ("미국 실업률 4.3%로 상승", False)):
+            with self.subTest(title=title):
+                result = run_two_stage_pipeline([source], FakeGenerator([
+                    json.dumps([selection(0)]),
+                    json.dumps([{**summary(0), "title": title, "source_excerpt": source["raw_content"]}], ensure_ascii=False),
+                ]))
+                self.assertEqual(bool(result.selected), accepted)
+
+    def test_preserves_explicit_reporting_year_over_historical_body_comparison(self):
+        source = article(0)
+        source.update(raw_title="US July 2026 unemployment rate rises to 4.3%",
+                      raw_description="US July 2026 unemployment rate rises to 4.3%.",
+                      raw_content="US July 2026 unemployment rate increased to 4.3%; in July 2025 it was 4.1%.")
+        for title, accepted in (
+            ("미국 2026년 7월 실업률 4.3%로 상승", True),
+            ("미국 2025년 7월 실업률 4.3%로 상승", False),
+            ("미국 7월 실업률 4.3%로 상승", False),
+        ):
+            with self.subTest(title=title):
+                result = run_two_stage_pipeline([source], FakeGenerator([
+                    json.dumps([selection(0)]),
+                    json.dumps([{**summary(0), "title": title,
+                                 "source_excerpt": source["raw_description"]}], ensure_ascii=False),
+                ]))
+                self.assertEqual(bool(result.selected), accepted)
+
+    def test_preserves_annual_reporting_year_without_month_or_quarter(self):
+        source = article(0)
+        source.update(raw_title="US 2026 GDP growth announced at 3.4%",
+                      raw_description="US 2026 GDP growth is 3.4%.",
+                      raw_content="US 2026 GDP growth is 3.4%; growth in 2025 was 3.1%.")
+        for title, accepted in (
+            ("미국 2026년 GDP 성장률 3.4% 발표", True),
+            ("미국 2025년 GDP 성장률 3.4% 발표", False),
+            ("미국 GDP 성장률 3.4% 발표", False),
+        ):
+            with self.subTest(title=title):
+                result = run_two_stage_pipeline([source], FakeGenerator([
+                    json.dumps([selection(0)]),
+                    json.dumps([{**summary(0), "title": title,
+                                 "source_excerpt": source["raw_description"]}], ensure_ascii=False),
+                ]))
+                self.assertEqual(bool(result.selected), accepted)
 
     def test_summary_identity_mismatch_logs_schema_error_and_keeps_unresolved(self):
         source = article(0)
@@ -258,7 +392,7 @@ class TwoStagePipelineTests(unittest.TestCase):
         )
         self.assertEqual(
             post.call_args_list[1].kwargs["json"]["response_format"]["json_schema"]["name"],
-            "news_summary",
+            "news_headlines",
         )
 
     @patch("llm_helper.requests.post")
@@ -330,15 +464,15 @@ class GroundedPipelineTests(unittest.TestCase):
         payload = json.loads(generator.prompts[1].split("ITEMS:\n", 1)[1])
         self.assertNotIn("selection_reason", payload[0])
         self.assertIn({"source": "Zambia", "korean_names": ["잠비아"]}, payload[0]["source_entities"])
-        self.assertIn("source_excerpt", SUMMARY_RESPONSE_FORMAT["json_schema"]["schema"]["items"]["required"])
+        self.assertIn("source_excerpt", HEADLINE_RESPONSE_FORMAT["json_schema"]["schema"]["items"]["required"])
 
-    def test_quality_failure_can_use_complete_korean_source_with_disclosure(self):
+    def test_quality_failure_can_use_complete_korean_source_headline(self):
         source = article(0)
         source.update(raw_title="가기업 수도권 공장 증설 확정", raw_description="가기업이 수도권 공장 증설을 확정했습니다.", raw_content="가기업이 수도권 공장 증설을 확정했습니다.")
-        generated = {**summary(0), "content": "가기업이 공장을 증설했습니다.입니다.", "source_excerpt": source["raw_description"]}
+        generated = {**summary(0), "title": "가기업 공장을 증설하기 위해", "source_excerpt": source["raw_description"]}
         result, generator = self.run_one(source, [generated])
         self.assertEqual(result.selected[0]["normalized_title"], source["raw_title"])
-        self.assertEqual(result.selected[0]["normalized_content"], "원문 발췌: " + source["raw_description"])
+        self.assertEqual(result.selected[0]["normalized_content"], "")
         self.assertEqual(result.source_fallbacks, 1)
         self.assertEqual(result.quality_failed, 0)
         self.assertEqual(len(generator.prompts), 2)
@@ -347,19 +481,19 @@ class GroundedPipelineTests(unittest.TestCase):
         source = article(0)
         result, _ = self.run_one(source, [])
         self.assertEqual(result.quality_failed, 1)
-        self.assertEqual(result.quality_reasons, {"summary_omitted": 1})
+        self.assertEqual(result.quality_reasons, {"headline_omitted": 1})
         source.update(raw_title="가기업 공장 증설 확정", raw_description="가기업이 공장 증설을 확정했습니다.")
         result, _ = self.run_one(source, [])
         self.assertEqual(result.source_fallbacks, 1)
         self.assertEqual(len(result.selected), 1)
 
-    def test_truncated_korean_source_is_not_repaired_or_published_as_fallback(self):
+    def test_truncated_body_is_not_published_when_complete_source_headline_is_available(self):
         source = article(0)
         source.update(raw_title="가기업 공장 증설 확정", raw_description="가기업이 공장 증설을 확정하고", raw_content="가기업이 공장 증설을 확정하고 [123 chars]")
         result, _ = self.run_one(source, [])
-        self.assertEqual(result.selected, [])
-        self.assertEqual(result.quality_failed, 1)
-        self.assertIn(source["original_url"], result.unevaluated_urls)
+        self.assertEqual(result.selected[0]["normalized_title"], source["raw_title"])
+        self.assertEqual(result.selected[0]["normalized_content"], "")
+        self.assertEqual(result.source_fallbacks, 1)
 
     def test_duplicate_summary_ids_fail_contract_without_publishing(self):
         result, _ = self.run_one(article(0), [summary(0), summary(0)])
@@ -368,22 +502,22 @@ class GroundedPipelineTests(unittest.TestCase):
 
 
 class KoreanSourceFallbackTests(unittest.TestCase):
-    def test_quotes_complete_plain_style_source_without_rewriting_it(self):
+    def test_preserves_complete_source_headline_without_quoting_body(self):
         source = article(0)
         source.update(raw_title="테슬라코리아 FSD 안전 검증 협조 계획", raw_description="테슬라코리아가 국내 FSD 안전성 검증에 협조하기로 했다.", raw_content="")
         generator = FakeGenerator([json.dumps([selection(0)]), "[]"])
         result = run_two_stage_pipeline([source], generator)
         self.assertEqual(len(result.selected), 1)
-        self.assertIn(source["raw_description"], result.selected[0]["normalized_content"])
-        self.assertTrue(result.selected[0]["normalized_content"].startswith("원문 발췌:"))
+        self.assertEqual(result.selected[0]["normalized_title"], source["raw_title"])
+        self.assertEqual(result.selected[0]["normalized_content"], "")
         self.assertEqual(result.source_fallbacks, 1)
 
-    def test_rejects_bare_endings_inside_source_quote_fallback(self):
+    def test_does_not_publish_malformed_source_body(self):
         source = article(0)
         source.update(raw_title="가기업 공장 증설 확정", raw_description="가기업이 공장 증설을 확정했다.입니다.", raw_content="")
         result = run_two_stage_pipeline([source], FakeGenerator([json.dumps([selection(0)]), "[]"]))
-        self.assertEqual(result.selected, [])
-        self.assertEqual(result.quality_failed, 1)
+        self.assertEqual(result.selected[0]["normalized_content"], "")
+        self.assertEqual(result.source_fallbacks, 1)
 
 
 class ReviewedEvidenceBoundaryTests(unittest.TestCase):
@@ -396,8 +530,8 @@ class ReviewedEvidenceBoundaryTests(unittest.TestCase):
         self.assertEqual(result.quality_reasons, {"invalid_source_excerpt": 1})
 
     def test_rss_short_text_sentinel_is_not_substantive_source_evidence(self):
-        from news_pipeline import validate_legacy_summary
-        result = validate_legacy_summary({
+        from news_pipeline import validate_legacy_headline
+        result = validate_legacy_headline({
             "title": "테슬라 공장 증설", "content": "테슬라가 공장 증설을 발표했습니다.",
             "source_excerpt": "TEXT_TOO_SHORT", "importance_score": 8, "category": "corporate",
         }, {"id": 0, "title": "Tesla expands factory", "content_to_analyze": "TEXT_TOO_SHORT", "original_url": "https://example.com/a"})

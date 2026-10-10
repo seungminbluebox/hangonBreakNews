@@ -2,7 +2,7 @@
 
 The production worker preserves the existing public ``breaking_news``
 contract while storing the provider body in a private column. Provider
-metadata is not mixed into the user-facing title or summary.
+metadata is not mixed into the user-facing title. No body summary is generated.
 """
 
 import argparse
@@ -22,11 +22,14 @@ from gnews_adapter import (
 from news_selector import NEWS_SELECTION_RESPONSE_FORMAT, select_and_summarize
 from news_pipeline import (
     SELECTION_RESPONSE_FORMAT,
-    SUMMARY_RESPONSE_FORMAT,
+    HEADLINE_RESPONSE_FORMAT,
     run_two_stage_pipeline,
 )
 from openrouter_budget import OpenRouterBudgetError, is_free_model
 from cycle_logging import cycle_scope, current_context, log_event
+
+
+select_headlines = partial(select_and_summarize, headline_only=True)
 
 
 DEFAULT_GNEWS_AI_MODEL = "openrouter/free"
@@ -107,7 +110,8 @@ def to_breaking_news_row(news_item: dict) -> dict:
     )
     return {
         "title": news_item["normalized_title"],
-        "content": news_item["normalized_content"],
+        # Compatibility with the existing NOT NULL column; no generated body.
+        "content": "",
         "importance_score": normalize_importance(news_item["importance_score"]),
         "category": news_item["category"],
         "original_url": news_item["original_url"],
@@ -185,7 +189,7 @@ def publish_breaking_news(news_item: dict, *, revalidate, push) -> None:
     revalidate("/")
     push(
         title=f"{prefix} {news_item['normalized_title']}",
-        body=news_item["normalized_content"],
+        body="",
         url="/live",
         categories=target_categories,
     )
@@ -248,7 +252,7 @@ def run_cycle(
     state: TrackerState,
     *,
     collector=collect_default_headlines,
-    selector=select_and_summarize,
+    selector=select_headlines,
     clock=lambda: datetime.now(timezone.utc),
     sleeper=time.sleep,
     output=print,
@@ -451,7 +455,7 @@ def _run_simple_cycle(
     output=print,
     _stats=None,
 ):
-    """Process only the current fetch with one selection and one summary stage."""
+    """Process only the current fetch with one selection and one headline stage."""
     defaults = {
         "fetched": 0,
         "candidates": 0,
@@ -658,7 +662,7 @@ def run_dry_run(
     *,
     client_factory=GNewsClient,
     collector=collect_default_headlines,
-    selector=select_and_summarize,
+    selector=select_headlines,
     clock=lambda: datetime.now(timezone.utc),
     sleeper=time.sleep,
     output=print,
@@ -675,7 +679,7 @@ def run_dry_run(
         fetched_at=clock(),
         sleeper=sleeper,
     )
-    if selector is select_and_summarize:
+    if selector is select_headlines or selector is select_and_summarize:
         filtered, _ = _filter_pipeline_candidates(collected_articles)
         result = run_two_stage_pipeline(filtered, generator)
         articles = result.selected
@@ -685,7 +689,6 @@ def run_dry_run(
                 "source_name": item["source_name"],
                 "published_at": item["published_at"],
                 "title": item["normalized_title"],
-                "content": item["normalized_content"],
                 "importance_score": item["importance_score"],
                 "category": item["category"],
                 "news_type": item["news_type"],
@@ -730,7 +733,6 @@ def run_dry_run(
             "source_name": item["source_name"],
             "published_at": item["published_at"],
             "title": item["normalized_title"],
-            "content": item["normalized_content"],
             "importance_score": item["importance_score"],
             "category": item["category"],
             "news_type": item["news_type"],
@@ -826,7 +828,7 @@ class GNewsStageGenerator:
             response_format=(
                 SELECTION_RESPONSE_FORMAT
                 if stage == "selection"
-                else SUMMARY_RESPONSE_FORMAT
+                else HEADLINE_RESPONSE_FORMAT
             ),
             provider_preferences={
                 "require_parameters": True,

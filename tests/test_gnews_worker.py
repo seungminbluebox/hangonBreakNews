@@ -755,7 +755,7 @@ class ExistingContractTests(unittest.TestCase):
         query.order.assert_called_once_with("created_at", desc=True)
         query.limit.assert_called_once_with(100)
 
-    def test_maps_raw_content_to_private_source_content_without_changing_content(self):
+    def test_maps_raw_content_to_private_source_content_and_keeps_public_body_empty(self):
         source = article()
         source["raw_content"] = "  Exact provider body\nsecond line  "
 
@@ -765,7 +765,7 @@ class ExistingContractTests(unittest.TestCase):
             row,
             {
                 "title": "미국 경제지표 발표",
-                "content": "미국에서 새로운 경제지표가 발표됐습니다.",
+                "content": "",
                 "importance_score": 9,
                 "category": "indicator",
                 "original_url": "https://example.com/article-1",
@@ -789,7 +789,7 @@ class ExistingContractTests(unittest.TestCase):
         row = to_breaking_news_row(item)
 
         self.assertIsNone(row["source_content"])
-        self.assertEqual(row["content"], item["normalized_content"])
+        self.assertEqual(row["content"], "")
 
     def test_maps_whitespace_raw_content_to_null_source_content(self):
         source = article()
@@ -852,6 +852,7 @@ class ExistingContractTests(unittest.TestCase):
         publish_breaking_news(item, revalidate=Mock(), push=push)
 
         self.assertNotIn(item["raw_content"], repr(push.call_args))
+        self.assertEqual(push.call_args.kwargs["body"], "")
 
     def test_regular_news_targets_realtime_news_subscribers(self):
         for score in (7, 8):
@@ -866,7 +867,7 @@ class ExistingContractTests(unittest.TestCase):
 
                 push.assert_called_once_with(
                     title="[주요 경제 소식] 미국 경제지표 발표",
-                    body="미국에서 새로운 경제지표가 발표됐습니다.",
+                    body="",
                     url="/live",
                     categories=("breaking_news",),
                 )
@@ -890,7 +891,7 @@ class ExistingContractTests(unittest.TestCase):
                 )
                 push.assert_called_once_with(
                     title="🚨[긴급 속보] 미국 경제지표 발표",
-                    body="미국에서 새로운 경제지표가 발표됐습니다.",
+                    body="",
                     url="/live",
                     categories=("breaking_news", "important_breaking_news"),
                 )

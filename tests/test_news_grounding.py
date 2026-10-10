@@ -105,7 +105,7 @@ class LegacyValidationTests(unittest.TestCase):
         newspaper.Article, newspaper.Config = Article, SimpleNamespace
         namespace = {
             "is_market_open": lambda: True, "json": json,
-            "validate_legacy_summary": getattr(news_pipeline, "validate_legacy_summary", None),
+            "validate_legacy_headline": news_pipeline.validate_legacy_headline,
             "safe_generate_content": lambda prompt: SimpleNamespace(text=json.dumps([
                 {"id": 0, "title": "잠비아 구리 광산 증설 승인", "content": content,
                  "importance_score": 8, "category": "corporate", "source_excerpt": raw_body}
@@ -117,13 +117,15 @@ class LegacyValidationTests(unittest.TestCase):
                 {"title": "오류가 있는 AI 제목", "source_title": source_title, "original_url": "https://example.com/a"}
             ], [])
 
-    def test_rss_summary_cannot_bypass_shared_quality_gate(self):
-        self.assertEqual(self.analyze("잠비아가 구리 광산 증설을 승인했습니다.입니다."), [])
+    def test_rss_body_summary_is_ignored_and_never_published(self):
+        result = self.analyze("잠비아가 구리 광산 증설을 승인했습니다.입니다.")
+        self.assertEqual(result[0]["content"], "")
 
     def test_valid_rss_summary_keeps_original_source_and_public_fields(self):
         result = self.analyze("잠비아가 구리 광산 증설을 승인했습니다.")
         self.assertEqual(result[0]["title"], "잠비아 구리 광산 증설 승인")
         self.assertEqual(result[0]["original_url"], "https://example.com/a")
+        self.assertEqual(result[0]["content"], "")
 
 
 class ObservedPublicOutputTests(unittest.TestCase):

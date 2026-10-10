@@ -272,6 +272,7 @@ SOURCE_GEOGRAPHY_PATTERNS = (
     (r"\baustralia\b", ("호주", "오스트레일리아")),
     (r"\bnew zealand\b", ("뉴질랜드",)),
     (r"\bindonesia\b", ("인도네시아",)),
+    (r"\bthailand\b", ("태국",)),
     (r"\bmalaysia\b", ("말레이시아",)),
     (r"\bnigeria\b", ("나이지리아",)),
     (r"\bzambia\b", ("잠비아",)),
@@ -3791,10 +3792,134 @@ Return only the repaired items as one bare JSON array:
 """
 
 
+def _person_count_value(value: str) -> str:
+    """Normalize exact integer person counts, including Korean large units."""
+    amount = Decimal(0)
+    units = {"억": Decimal(100_000_000), "만": Decimal(10_000), "": Decimal(1)}
+    for number, unit in re.findall(r"(\d+(?:,\d{3})*(?:\.\d+)?)([억만]?)", value):
+        amount += Decimal(number.replace(",", "")) * units[unit]
+    return _normalize_number(format(amount, "f"))
+
+
+_PERSON_COUNT = r"\d+(?:,\d{3})*(?:\.\d+)?(?:억\s*\d*)?(?:만\s*\d*)?"
+
+
+def _casualty_role_counts(text: str, *, unclassified=None) -> dict[str, set[str]]:
+    """Read explicit adjacent casualty labels, never infer deaths from total victims."""
+    roles = {
+        "death": (r"dead|deaths?|fatalities|killed|died",
+                  r"사망(?:자)?|숨(?:진|져|졌|지)|죽(?:어|었|은|다)|"
+                  r"(?:목숨|생명)(?:을)?\s*잃(?:은|어|었|다)|"
+                  r"숨(?:을)?\s*거(?:둬|뒀|둔|두)|유명(?:을)?\s*달리"),
+        "affected": (r"affected|affecting|affects?", r"피해(?:\s*인구|자)?|영향(?:을\s*받은)?"),
+        "injured": (r"injured|injuries", r"부상(?:자)?|다(?:친|쳐|쳤|치)"),
+        "missing": (r"missing", r"실종(?:자)?"),
+        "displaced": (r"displaced|evacuated", r"이재민|대피(?:자)?"),
+    }
+    person_labels = {
+        "death": r"사망자",
+        "affected": r"피해\s*인구|피해자",
+        "injured": r"부상자",
+        "missing": r"실종자",
+        "displaced": r"이재민|대피자",
+    }
+    result = {role: set() for role in roles}
+    if unclassified is not None:
+        unclassified.update(
+            match.span(1) for match in re.finditer(rf"({_PERSON_COUNT})\s*(?:여\s*)?명", text)
+        )
+    for role, (english, korean) in roles.items():
+        person_label = person_labels[role]
+        if unclassified is not None:
+            # A person label establishes a count even when '명' is omitted.
+            # Unknown connecting wording stays unclassified and fails closed.
+            for pattern in (
+                rf"(?:{person_label})[^\d·;:\n]{{0,12}}({_PERSON_COUNT})",
+                rf"({_PERSON_COUNT})[^\d·;:\n]{{0,12}}(?:{person_label})",
+            ):
+                unclassified.update(match.span(1) for match in re.finditer(pattern, text))
+        patterns = (
+            rf"({_PERSON_COUNT})\s*(?:people\s+)?(?:(?:have\s+|has\s+)?been\s+)?(?:{english})\b",
+            rf"\b(?:{english})\s*(?:people\s*)?(?:of\s*|to\s*)?({_PERSON_COUNT})\b",
+            rf"({_PERSON_COUNT})\s*(?:여\s*)?명(?:이|의|은|는|만)?\s*"
+            rf"(?:(?:긴급(?:히)?|추가|누적|모두|총|약)\s*)?(?:{korean})",
+            rf"(?:{korean})\s*(?:수는?\s*)?({_PERSON_COUNT})\s*명",
+            rf"(?:{person_label})\s*(?:(?:총|추가|누적|수는?)\s*)?"
+            rf"({_PERSON_COUNT})(?![\d,.조원%])",
+            rf"({_PERSON_COUNT})\s*(?:{person_label})",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                result[role].add(_person_count_value(match.group(1)))
+                if unclassified is not None:
+                    unclassified.discard(match.span(1))
+    return result
+
+
+def _headline_fidelity_error(article: dict, title: str) -> str | None:
+    source = " ".join(article.get(field) or "" for field in
+                      ("raw_title", "raw_description", "raw_content"))
+    if _has_speculative_event_language(source) and not (
+        _has_speculative_event_language(title)
+        or any(marker in title for marker in ("검토", "고려", "예상", "계획", "예정"))
+    ):
+        return "confidence_mismatch"
+    source_counts = _casualty_role_counts(source)
+    unclassified = set()
+    title_counts = _casualty_role_counts(title, unclassified=unclassified)
+    # Check each occurrence, not just its numeric value: a repeated count can
+    # have a valid label once and an unsupported/unknown label elsewhere.
+    if any(source_counts.values()) and unclassified:
+        return "ambiguous_casualty_role"
+    for role, counts in title_counts.items():
+        if not counts.issubset(source_counts[role]):
+            return "casualty_role_mismatch"
+
+    # Only compare the primary headline: unrelated body metrics can move in
+    # opposite directions and should not cause a false rejection.
+    source_title = article.get("raw_title") or ""
+    positive = bool(re.search(r"\b(?:rise[sn]?|rose|increase[sd]?|grew|grows?|raised)\b", source_title, re.I))
+    negative = bool(re.search(r"\b(?:falls?|fell|drop[sp]?|dropped|decline[sd]?|decrease[sd]?|lowered)\b", source_title, re.I))
+    korean_positive, korean_negative = DIRECTION_MARKER_PAIRS[0]
+    if positive != negative:
+        wrong = korean_negative if positive else korean_positive
+        right = korean_positive if positive else korean_negative
+        if any(marker in title for marker in wrong) and not any(marker in title for marker in right):
+            return "source_direction_mismatch"
+
+    # Preserve the reporting period stated in the primary source headline.
+    periods = _event_period_tokens(source_title)
+    month_names = ("January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December")
+    for month, name in enumerate(month_names, 1):
+        # Lowercase 'may' is a modal verb, not a reporting month.
+        flags = 0 if name == "May" else re.I
+        if re.search(rf"\b(?:{name}|{name[:3]})\b", source_title, flags):
+            periods.add(f"*-month-{month}")
+    for quarter in re.findall(r"\bQ([1-4])\b", source_title, re.I):
+        periods.add(f"*-quarter-{quarter}")
+    source_years = set(re.findall(r"(?<!\d)(20\d{2})(?!\d)", source_title))
+    if len(source_years) == 1:
+        source_year = next(iter(source_years))
+        if source_year not in set(re.findall(r"(?<!\d)(20\d{2})(?!\d)", title)):
+            return "reporting_period_mismatch"
+        periods = {period.replace("*-", f"{source_year}-", 1) for period in periods}
+    generated_periods = _event_period_tokens(title)
+    if any(not any(
+        period == generated or (
+            period.startswith("*-") and period.split("-", 1)[1] == generated.split("-", 1)[1]
+        ) for generated in generated_periods
+    ) for period in periods):
+        return "reporting_period_mismatch"
+    return None
+
+
 def _decision_to_item(
     decision: dict,
     articles: list[dict],
     seen_refs: set[str],
+    *,
+    headline_only: bool = False,
 ) -> tuple[dict | None, str | None]:
     if not isinstance(decision, dict):
         return None, None
@@ -3831,7 +3956,7 @@ def _decision_to_item(
         or not isinstance(title, str)
         or not title.strip()
         or not isinstance(content, str)
-        or not content.strip()
+        or (not headline_only and not content.strip())
         or isinstance(importance_score, bool)
         or not isinstance(importance_score, (int, float))
         or importance_score < 7
@@ -3842,7 +3967,15 @@ def _decision_to_item(
         return failed("invalid_fields")
 
     title = _normalize_known_korean_terms(articles[temp_id], title.strip())
-    content = _normalize_known_korean_terms(articles[temp_id], content.strip())
+    content = title if headline_only else _normalize_known_korean_terms(articles[temp_id], content.strip())
+    if headline_only:
+        if len(title) > 55:
+            return failed("headline_too_long")
+        if title.endswith("위해"):
+            return failed("incomplete_title")
+        fidelity_error = _headline_fidelity_error(articles[temp_id], title)
+        if fidelity_error:
+            return failed(fidelity_error)
     category = _normalize_category(articles[temp_id], category)
     if _has_incomplete_title(title, content):
         return failed("incomplete_title")
@@ -3894,14 +4027,20 @@ def _decision_to_item(
         return failed("incorrect_source_claim_actor")
     if _missing_source_geography(articles[temp_id], title, content, category):
         return failed("missing_source_geography")
-    if not _is_valid_report_summary(content):
+    if not headline_only and not _is_valid_report_summary(content):
         return failed("invalid_report_style_summary")
-    if _unsupported_summary_numbers(articles[temp_id], title, content):
+    number_title = title
+    if headline_only:
+        number_title = re.sub(
+            rf"({_PERSON_COUNT})\s*(?:여\s*)?명",
+            lambda match: f"{_person_count_value(match.group(1))}명", title,
+        )
+    if _unsupported_summary_numbers(articles[temp_id], number_title, number_title if headline_only else content):
         return failed("unsupported_source_numbers")
 
     item = articles[temp_id].copy()
     item["normalized_title"] = title
-    item["normalized_content"] = content
+    item["normalized_content"] = "" if headline_only else content
     item["importance_score"] = _normalize_importance_score(
         articles[temp_id],
         importance_score,
@@ -3918,8 +4057,17 @@ def select_and_summarize(
     *,
     batch_size: int = 10,
     recent_news: list[dict] | None = None,
+    headline_only: bool = False,
 ) -> SelectionResult:
-    """Keep new, economically relevant developments and summarize them in Korean."""
+    """Legacy list contract; worker defaults opt into headline-only mode."""
+    if headline_only:
+        # Preserve the callable/list contract for older worker integrations while
+        # sharing the current title-only pipeline. The old summary implementation
+        # below remains solely for historical callers/tests, never worker defaults.
+        from news_pipeline import run_two_stage_pipeline
+        result = run_two_stage_pipeline(articles, generator, recent_news=recent_news)
+        return SelectionResult(result.selected, retryable_urls=result.unevaluated_urls)
+
     if not articles:
         return SelectionResult()
 
