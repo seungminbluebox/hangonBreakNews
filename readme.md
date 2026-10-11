@@ -155,7 +155,8 @@ where conrelid = 'public.breaking_news'::regclass
 - **로그 보관**: 이번 변경은 애플리케이션 출력 통합입니다. 서버 로그 회전·파일 크기·보관 기간 설정은 별도 운영 작업이며 변경하지 않았습니다.
 - **속보 기준**: 기사 종류와 관계없이 영향 범위·변화 규모·시장 즉시성 중 두 가지 이상을 강하게 충족하면 9점 속보, 세 가지 모두 충족하며 세계 시장이나 금융시스템에 충격을 줄 수 있을 때만 10점으로 분류합니다. 일반 실적·기업 인수·지분 매각·규제 심사 보류·단순 지수 최고치와 구체적인 새 조치나 즉각적인 충격이 없는 산업 동향·전망은 최대 8점입니다.
 - **알림 기준**: 중요도 7~8은 `breaking_news`, 9~10은 `breaking_news`와 `important_breaking_news` 구독자에게 중복 없이 발송합니다.
-- **Pulse·중복 계약**: 비공개 `source_content` 원문은 Pulse 근거와 내부 중복 비교에만 사용합니다. 중복 DB 조회는 `content`를 읽지 않고 원문 없으면 제목만 비교합니다. Pulse의 원문 없는 옛 행은 상세 근거를 제공하지 않으며 생성요약을 원문으로 위장하지 않습니다. 기존 생성요약 보존/복원은 별도 비공개 아카이브·백업 승인 작업입니다. [제목 전용 배포 순서](docs/2026-10-10-headline-only-rollout.md)를 참고하세요.
+- **Pulse·중복 계약**: 비공개 `source_content` 원문은 제목 검증·Pulse 근거·내부 중복 비교에 사용하고 유지합니다. 삭제 범위는 생성요약 `content` 열뿐이며 사용자 지시에 따라 백업·복구·아카이브 없이 완전히 삭제하는 준비안입니다. 중복 DB 조회는 `content`를 읽지 않고 원문 없으면 제목만 비교합니다. Pulse의 원문 없는 옛 행은 상세 근거를 제공하지 않으며 생성요약을 원문으로 위장하지 않습니다. 실제 DROP은 미실행입니다. [제목 전용 배포 순서](docs/2026-10-10-headline-only-rollout.md)를 참고하세요.
+- **OCI 준비 후 배포**: 현재 NAVER 운영은 정상이며 OCI의 실제 경로·프로세스 이름은 확인 전까지 추측하지 않습니다. OCI 준비·운영 승인 후 checkout/main SHA·진입점·mode를 확인하고 최신 main/omit을 반영해 승인된 대상만 시작·검증합니다. NAVER/OCI 중복 수집을 피하고 새 저장·제목 전용 출력·비공개 원문 권한·DROP 후 content 없음/source_content 유지를 확인합니다. 서버·키·배포·SQL 실행은 이번 문서 작업에서 수행하지 않았습니다.
 - **필수 환경 변수 이름**: `GNEWS_API_KEY`, `OPENROUTER_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`
 - **선택 환경 변수 이름**: `BREAKING_NEWS_CONTENT_COLUMN_MODE`(`legacy|omit`, 기본 `legacy`), `GNEWS_AI_MODEL_NAME`, `GNEWS_AI_BACKUP_MODEL`, `GNEWS_DAILY_SAFETY_LIMIT`, `OPENROUTER_FREE_DAILY_LIMIT`, `OPENROUTER_BUDGET_PATH`, `REVALIDATE_SECRET`, `FRONTEND_URL`, `FIREBASE_CREDENTIALS`
 - **OpenRouter 무료 요청 예산**: 무료 모델(`openrouter/free` 및 `:free`)은 기본 UTC 일일 990회와 5분 슬롯별 분할 한도를 공유합니다. 예산 DB 기본 경로는 프로젝트의 `.openrouter-budget.sqlite3`이며, 여러 프로세스가 같은 파일을 사용해야 사용량과 429 차단을 공유합니다. 예산 초과·429 차단은 현재 회차를 종료하며 기사는 다음 수집에서 다시 평가합니다.

@@ -10,13 +10,20 @@ exclude content. Realtime application filtering does not prove transport privacy
 source_content must remain denied to public roles, with live payload verification
 performed separately under operational approval.
 
+The user's current removal scope is the `content` summary column only, without
+backup, archive or recovery preparation. Private `source_content` remains necessary
+for headline checks and Pulse evidence. Actual DROP and server deployment have not
+been executed. OCI paths/process names must be verified after OCI preparation and
+operational approval; historical paths below are not OCI deployment instructions.
+
 ## Scope
 
 The GNews collector already receives provider `content` once and keeps it as
 `raw_content`. New rows preserve that exact value in the private
 `breaking_news.source_content` column. New title-only collections default to an empty compatibility string in
 `breaking_news.content` (`BREAKING_NEWS_CONTENT_COLUMN_MODE=legacy`). After separately approved expand/default preparation,
-`omit` writes exclude that column entirely; historical summaries remain unchanged. See
+`omit` writes exclude that column entirely; historical summaries remain unchanged until
+the separately executed complete content-column deletion. See
 [the current rollout contract](2026-10-10-headline-only-rollout.md).
 
 This change does not:
