@@ -200,12 +200,14 @@ def _call_stage(prompt, generator, *, retry_state, stage, validator=None):
     if context is not None:
         context.set_stage(stage)
     for attempt in range(2):
+        contract_detail = "non_array"
         try:
             if getattr(generator, "supports_stage_options", False):
                 response = generator(prompt, stage=stage)
             else:
                 response = generator(prompt)
             parsed = _decode_json_array(_response_text(response))
+            contract_detail = "selection_fields" if stage == "selection" else "headline_fields"
             if validator is not None and not validator(parsed):
                 raise ValueError("AI response contract is invalid")
             return parsed
@@ -240,6 +242,7 @@ def _call_stage(prompt, generator, *, retry_state, stage, validator=None):
             log_event("ai_retry", level=30, stage=stage, attempt=2, max_attempts=2, reason=reason)
         except ValueError:
             reason = "schema_error"
+            log_event("ai_contract_failed", level=30, stage=stage, reason=reason, detail=contract_detail)
             if attempt == 1 or retry_state["used"]:
                 record_failure("ai_failures", stage=stage, reason=reason)
                 log_event("ai_stage_failed", level=40, stage=stage, status="failed", reason=reason)
@@ -260,6 +263,7 @@ def _call_stage(prompt, generator, *, retry_state, stage, validator=None):
 
 def _record_schema_failure(stage):
     record_failure("ai_failures", stage=stage, reason="schema_error")
+    log_event("ai_contract_failed", level=30, stage=stage, reason="schema_error", detail="identity")
     log_event("ai_stage_failed", level=40, stage=stage, status="failed", reason="schema_error")
 
 

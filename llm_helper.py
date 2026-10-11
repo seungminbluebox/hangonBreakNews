@@ -33,9 +33,39 @@ class AIRequestError(RuntimeError):
 
 
 class _FailureSignal(Exception):
-    def __init__(self, reason, status_code=None):
+    def __init__(self, reason, status_code=None, detail=None):
         self.reason = reason
         self.status_code = status_code
+        self.detail = detail
+
+
+def _response_diagnostics(envelope, requested_model, max_tokens):
+    """Project only public model IDs, fixed labels and numeric response sizes."""
+    def model_id(value):
+        if isinstance(value, str) and re.fullmatch(r"[a-z0-9_-]+/[A-Za-z0-9._:-]{1,100}", value):
+            return value
+        return "unknown"
+
+    def token_count(value):
+        return value if type(value) is int and 0 <= value <= 10_000_000 else None
+
+    fields = {"requested_model": model_id(requested_model), "max_tokens": token_count(max_tokens)}
+    envelope = envelope if isinstance(envelope, dict) else {}
+    fields["response_model"] = model_id(envelope.get("model"))
+    choices = envelope.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    finish_reason = choice.get("finish_reason")
+    fields["finish_reason"] = finish_reason if finish_reason in ("stop", "length", "tool_calls", "content_filter", "error") else "unknown"
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    fields["output_chars"] = len(content) if isinstance(content, str) else None
+    usage = envelope.get("usage")
+    if isinstance(usage, dict):
+        fields["completion_tokens"] = token_count(usage.get("completion_tokens"))
+        details = usage.get("completion_tokens_details")
+        if isinstance(details, dict):
+            fields["reasoning_tokens"] = token_count(details.get("reasoning_tokens"))
+    return fields
 
 class DummyResponse:
     """기존 파이썬 Gemini SDK의 response.text 프로퍼티와 호환성을 맞추기 위한 클래스"""
@@ -234,8 +264,10 @@ def safe_generate_content(
                 result_json = res.json()
             except (requests.exceptions.JSONDecodeError, json.JSONDecodeError, ValueError):
                 raise _FailureSignal("invalid_json", status_code)
+            if raise_on_failure:
+                log_event("ai_response_metadata", **_response_diagnostics(result_json, current_model, max_tokens))
             if not isinstance(result_json, dict):
-                raise _FailureSignal("schema_error", status_code)
+                raise _FailureSignal("schema_error", status_code, "invalid_envelope")
             if "error" in result_json:
                 error_value = result_json["error"]
                 error_code = (
@@ -259,19 +291,19 @@ def safe_generate_content(
 
             choices = result_json.get("choices")
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                raise _FailureSignal("schema_error", status_code)
+                raise _FailureSignal("schema_error", status_code, "invalid_choices")
             choice = choices[0]
             finish_reason = choice.get("finish_reason")
             if finish_reason == "length":
                 raise _FailureSignal("output_truncated", status_code)
             message = choice.get("message")
             if not isinstance(message, dict):
-                raise _FailureSignal("schema_error", status_code)
+                raise _FailureSignal("schema_error", status_code, "invalid_message")
             _content = message.get("content")
             if _content is None:
                 raise _FailureSignal("empty_response", status_code)
             if not isinstance(_content, str):
-                raise _FailureSignal("schema_error", status_code)
+                raise _FailureSignal("schema_error", status_code, "non_text_content")
 
             raw_content = _content.strip()
             # 사고 과정이나 마크다운이 섞여있어도 JSON만 정교하게 추출
@@ -287,6 +319,8 @@ def safe_generate_content(
             raise
 
         except _FailureSignal as failure:
+            if raise_on_failure and failure.detail is not None:
+                log_event("ai_response_failure", level=30, reason=failure.reason, detail=failure.detail)
             if retry_or_raise(failure.reason, failure.status_code, attempt):
                 continue
 
