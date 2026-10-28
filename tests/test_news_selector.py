@@ -2073,6 +2073,31 @@ class NewsSelectorTests(unittest.TestCase):
 
         self.assertEqual(selected, [])
 
+    def test_capitalized_english_prose_and_known_mistransliterations_are_rejected(self):
+        # Titles published on 2026-10-28.
+        from news_selector import (
+            _has_known_mistransliteration,
+            _has_untranslated_english_prose,
+        )
+
+        leaked = "미국 엔비디아, 메타 주식 공모에 30억 달러 투자 Said 후 주가 상승"
+        self.assertTrue(_has_untranslated_english_prose(leaked, leaked))
+        for title in (
+            "트럼프, 베네수엘라 원유 100만 바블 첫 선박 환영 예정",
+            "사우디 아라멜코가 유럽 정제사에 10월~11월 원유 할인 공급",
+        ):
+            with self.subTest(title=title):
+                self.assertTrue(_has_known_mistransliteration(title, title))
+        for title in (
+            "GM, 란싱 지역에 20억 달러 이상 투자해 하이브리드 차량 생산 준비",
+            "안트로픽, 아마존·구글·엔비디아·AMD 칩 혼합 사용",
+            "Meta, AI 인프라에 증자 자금 투입",
+            "사우디 아람코, 유럽에 10·11월 원유 추가 공급 제안",
+        ):
+            with self.subTest(title=title):
+                self.assertFalse(_has_untranslated_english_prose(title, title))
+                self.assertFalse(_has_known_mistransliteration(title, title))
+
     def test_rejects_summary_with_untranslated_english_prose(self):
         source = article(
             "commodity-report",

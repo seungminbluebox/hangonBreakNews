@@ -1552,14 +1552,37 @@ def _normalize_known_korean_terms(article: dict, value: str) -> str:
     return value
 
 
+# Capitalized English function words and reporting verbs are untranslated prose,
+# not proper nouns ("…메타 주식 공모에 30억 달러 투자 Said 후 주가 상승",
+# 2026-10-28). All-caps tokens stay allowed because they are usually tickers.
+_ENGLISH_PROSE_WORDS = frozenset((
+    "said", "says", "after", "amid", "before", "over", "with", "from", "will",
+    "would", "could", "should", "plans", "sees", "expects", "according",
+    "reports", "reported", "also", "more", "than", "into", "about", "against",
+    "while", "the", "and", "for", "its", "has", "have", "had", "was", "were",
+    "are", "been",
+))
+# Transliterations observed in published titles that are never correct Korean.
+_KNOWN_MISTRANSLITERATIONS = ("바블", "아라멜코", "헤게세트")
+
+
 def _has_untranslated_english_prose(title: str, content: str) -> bool:
-    return bool(
-        re.search(
-            r"(?<![A-Za-zÀ-ÖØ-öø-ÿ])[a-zà-öø-ÿ]{4,}"
-            r"(?![A-Za-zÀ-ÖØ-öø-ÿ])",
-            f"{title} {content}",
-        )
+    text = f"{title} {content}"
+    if re.search(
+        r"(?<![A-Za-zÀ-ÖØ-öø-ÿ])[a-zà-öø-ÿ]{4,}"
+        r"(?![A-Za-zÀ-ÖØ-öø-ÿ])",
+        text,
+    ):
+        return True
+    return any(
+        word.casefold() in _ENGLISH_PROSE_WORDS
+        for word in re.findall(r"(?<![A-Za-z])[A-Z]?[a-z]{2,}(?![A-Za-z])", text)
     )
+
+
+def _has_known_mistransliteration(title: str, content: str) -> bool:
+    text = f"{title} {content}"
+    return any(term in text for term in _KNOWN_MISTRANSLITERATIONS)
 
 
 def _has_foreign_script_fragment(title: str, content: str) -> bool:
@@ -4007,6 +4030,8 @@ def _decision_to_item(
         return failed("untranslated_english_prose")
     if _has_foreign_script_fragment(title, content):
         return failed("foreign_script_fragment")
+    if _has_known_mistransliteration(title, content):
+        return failed("known_mistransliteration")
     if _has_ambiguous_percentage_growth(content):
         return failed("unnamed_percentage_metric")
     if _is_missing_primary_change_metric(articles[temp_id], title, content):
