@@ -145,8 +145,8 @@ source_ref exactly. Do not write a title or summary and do not return URLs or ar
 CANDIDATES:
 {json.dumps(payload, ensure_ascii=False)}
 
-RECENT NEWS FOR DUPLICATE COMPARISON ONLY:
-{json.dumps(recent_news[:100], ensure_ascii=False)}
+RECENT NEWS TITLES FOR DUPLICATE COMPARISON ONLY:
+{json.dumps([item.get("title") or "" for item in recent_news[:100]], ensure_ascii=False)}
 """
 
 

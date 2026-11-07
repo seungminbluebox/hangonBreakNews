@@ -84,6 +84,24 @@ def summary(index):
 
 
 class TwoStagePipelineTests(unittest.TestCase):
+    def test_selection_prompt_carries_recent_titles_but_not_their_bodies(self):
+        recent = [{
+            "title": "FAA, 보잉 MAX 인증 발급",
+            "content": "recent-body-sentinel 미 연방항공청이 보잉 MAX 인증을 발급했습니다.",
+            "created_at": "2026-09-13T11:00:00+00:00",
+        }]
+        generator = FakeGenerator(["[]"])
+        run_two_stage_pipeline([article(0)], generator, recent_news=recent)
+        self.assertIn("FAA, 보잉 MAX 인증 발급", generator.prompts[0])
+        self.assertNotIn("recent-body-sentinel", generator.prompts[0])
+
+    def test_recent_body_still_removes_a_duplicate_after_headlines(self):
+        source = article(0)
+        recent = [{"title": "가기업 공장 확장 발표", "content": "가기업 공장 확장 발표"}]
+        generator = FakeGenerator([json.dumps([selection(0)]), json.dumps([summary(0)])])
+        result = run_two_stage_pipeline([source], generator, recent_news=recent)
+        self.assertEqual(result.selected, [])
+
     def test_runs_selection_then_top_ten_summary_and_keeps_metadata_in_code(self):
         articles = [article(index) for index in range(11)]
         source_labels = (
