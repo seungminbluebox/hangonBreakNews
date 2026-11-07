@@ -1587,7 +1587,18 @@ def _has_known_mistransliteration(title: str, content: str) -> bool:
 
 def _has_foreign_script_fragment(title: str, content: str) -> bool:
     text = f"{title} {content}"
-    return bool(re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff]", text))
+    return bool(re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\u0400-\u04ff\u0900-\u097f]", text))
+
+
+def _is_outlet_name_title(article: dict, title: str) -> bool:
+    """A title that is only the publisher's name (e.g. 'KBS \ub274\uc2a4') says nothing about the event."""
+    stripped = title.strip()
+    source_name = article.get("source_name")
+    if isinstance(source_name, str):
+        outlet = " ".join(source_name.split())
+        if outlet and " ".join(stripped.split()).casefold() == outlet.casefold():
+            return True
+    return bool(re.fullmatch(r"\S{1,12}\s?\ub274\uc2a4", stripped))
 
 
 def _has_unsupported_currency_conversion(
@@ -3988,6 +3999,8 @@ def _decision_to_item(
         or not selection_reason.strip()
     ):
         return failed("invalid_fields")
+    if _is_outlet_name_title(articles[temp_id], title):
+        return failed("outlet_name_title")
 
     title = _normalize_known_korean_terms(articles[temp_id], title.strip())
     content = title if headline_only else _normalize_known_korean_terms(articles[temp_id], content.strip())

@@ -512,6 +512,24 @@ class KoreanSourceFallbackTests(unittest.TestCase):
         self.assertEqual(result.selected[0]["normalized_content"], "")
         self.assertEqual(result.source_fallbacks, 1)
 
+    def test_outlet_name_source_headline_is_not_published_as_fallback(self):
+        # GNews can return only the publisher's name as the headline ('KBS 뉴스').
+        source = article(0)
+        source.update(raw_title="KBS 뉴스", source_name="KBS 뉴스",
+                      raw_description="9월 경상수지가 사상 처음 600억 달러를 넘었다.", raw_content="")
+        result = run_two_stage_pipeline([source], FakeGenerator([json.dumps([selection(0)]), "[]"]))
+        self.assertEqual(result.selected, [])
+        self.assertEqual(result.source_fallbacks, 0)
+        self.assertEqual(result.quality_failed, 1)
+
+    def test_korean_source_headline_fallback_still_works_next_to_outlet_check(self):
+        source = article(0)
+        source.update(raw_title="9월 경상수지 사상 첫 600억 달러 돌파", source_name="KBS 뉴스",
+                      raw_description="9월 경상수지가 사상 처음 600억 달러를 넘었다.", raw_content="")
+        result = run_two_stage_pipeline([source], FakeGenerator([json.dumps([selection(0)]), "[]"]))
+        self.assertEqual(result.selected[0]["normalized_title"], source["raw_title"])
+        self.assertEqual(result.source_fallbacks, 1)
+
     def test_does_not_publish_malformed_source_body(self):
         source = article(0)
         source.update(raw_title="가기업 공장 증설 확정", raw_description="가기업이 공장 증설을 확정했다.입니다.", raw_content="")

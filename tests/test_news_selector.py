@@ -6,6 +6,7 @@ import unittest
 from news_selector import (
     NEWS_SELECTION_RESPONSE_FORMAT,
     SELECTABLE_CATEGORIES,
+    _decision_to_item,
     select_and_summarize,
 )
 from openrouter_budget import OpenRouterRequestBlocked
@@ -5024,6 +5025,36 @@ class NewsSelectorTests(unittest.TestCase):
         self.assertEqual(properties["title"]["maxLength"], 55)
         self.assertNotIn("maxLength", properties["content"])
         self.assertIn("policy", SELECTABLE_CATEGORIES)
+
+    def _item_reason(self, title, content, *, source_name="Example News"):
+        source = article("gate-1", "Company reports a new factory investment",
+                         "The company announced a binding factory investment.",
+                         "https://example.com/gate-1")
+        source["source_name"] = source_name
+        return _decision_to_item(decision_for(source, 0, title=title, content=content),
+                                 [source], set())
+
+    def test_rejects_titles_that_are_only_the_outlet_name(self):
+        content = "9월 경상수지가 사상 처음 600억 달러를 넘었습니다."
+        for title, source_name in (("KBS 뉴스", "KBS 뉴스"), ("연합뉴스", "연합뉴스"),
+                                   ("SBS 뉴스", "Example News"), ("Example  News", "Example News")):
+            with self.subTest(title=title):
+                item, reason = self._item_reason(title, content, source_name=source_name)
+                self.assertIsNone(item)
+                self.assertEqual(reason, "outlet_name_title")
+
+    def test_rejects_cyrillic_and_devanagari_fragments_in_titles(self):
+        for title in ("프루ден셜, 분기 실적 발표", "아부다비 법원, NMC 창업자 Шет티 판결", "다hntेर라 최상일 판매"):
+            with self.subTest(title=title):
+                item, reason = self._item_reason(title, "회사가 새 공장 투자를 확정했습니다.")
+                self.assertIsNone(item)
+                self.assertEqual(reason, "foreign_script_fragment")
+
+    def test_normal_korean_titles_with_latin_abbreviations_still_pass_the_script_check(self):
+        for title in ("S&P 500, 3개월 만에 최고치", "AI 반도체 업체, 공장 투자 확정", "한국 GDP 성장률 발표"):
+            with self.subTest(title=title):
+                _, reason = self._item_reason(title, "회사가 새 공장 투자를 확정했습니다.")
+                self.assertNotIn(reason, ("foreign_script_fragment", "outlet_name_title"))
 
 if __name__ == "__main__":
     unittest.main()
