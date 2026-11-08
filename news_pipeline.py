@@ -136,7 +136,13 @@ pricing, trade, supply chains, or economically significant geopolitics. Exclude 
 recommendations, rankings, explainers, old-event rewrites, routine price moves, vague
 forecasts, promotional material, and stories too incomplete to verify. Compare the supplied
 recent news only to remove the same event; preserve material follow-ups. Score importance
-7-10 using breadth, magnitude, and immediacy. Use category market, indicator, geopolitics,
+7-10 using breadth, magnitude, and immediacy. Give 9-10 only to events that move Korean or US
+stocks, bonds, FX, or commodities the same day: index plunges or circuit breakers, central-bank
+rate decisions, wars or strikes that hit energy supply, major exchange hacks, emergency market
+measures. Remarks, interviews, feature series, forecasts, research reports, events, and small
+foreign deals score 7-8 at most. Select only news that can affect Korean or US stocks, rates, FX,
+commodities, or companies listed there; skip visas, immigration, and domestic politics of other
+countries unless markets react. Use category market, indicator, geopolitics,
 corporate, or policy and news_type breaking, new_development, official_announcement, or
 follow_up. Return only a JSON array. Each item must contain exactly temp_id, source_ref,
 importance_score, category, news_type, and a short Korean selection_reason. Copy temp_id and

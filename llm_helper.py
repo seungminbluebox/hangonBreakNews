@@ -74,6 +74,97 @@ class DummyResponse:
         self.finish_reason = finish_reason
 
 
+GEMINI_CHAT_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+JSON_ONLY_SUFFIX = "\n\n(IMPORTANT: 응답은 반드시 마크다운 백틱(```json) 없이 순수한 JSON 리스트([...]) 텍스트로만 반환하세요. 어떠한 설명, 사고 과정(Thought), 도입부 문구도 절대 포함하지 마세요. 바로 [ 로 시작해서 ] 로 끝나야 합니다.)"
+
+
+def _extract_json_payload(text):
+    """사고 과정이나 마크다운이 섞여 있어도 JSON 부분만 꺼낸다."""
+    match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    for opening, closing in (("[", "]"), ("{", "}")):
+        start_idx = text.find(opening)
+        end_idx = text.rfind(closing)
+        if start_idx != -1 and end_idx != -1:
+            return text[start_idx:end_idx + 1].strip()
+    return text.strip()
+
+
+def _content_response(envelope, status_code):
+    """Turn an OpenAI-style chat envelope into a DummyResponse or raise a typed failure."""
+    choices = envelope.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise _FailureSignal("schema_error", status_code, "invalid_choices")
+    choice = choices[0]
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "length":
+        raise _FailureSignal("output_truncated", status_code)
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        raise _FailureSignal("schema_error", status_code, "invalid_message")
+    content = message.get("content")
+    if content is None:
+        raise _FailureSignal("empty_response", status_code)
+    if not isinstance(content, str):
+        raise _FailureSignal("schema_error", status_code, "non_text_content")
+    content_text = _extract_json_payload(content.strip())
+    if not content_text:
+        raise _FailureSignal("empty_response", status_code)
+    return DummyResponse(content_text, finish_reason=finish_reason)
+
+
+def gemini_generate_content(
+    prompt_text,
+    *,
+    model_name,
+    api_key,
+    response_format=None,
+    request_timeout=60,
+    max_tokens=2000,
+):
+    """One call to Google AI Studio's OpenAI-compatible endpoint; any failure raises AIRequestError."""
+    data = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": prompt_text + JSON_ONLY_SUFFIX}],
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+    }
+    if response_format is not None:
+        data["response_format"] = response_format
+    record_ai_call()
+    try:
+        res = requests.post(
+            GEMINI_CHAT_URL,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=data,
+            timeout=request_timeout,
+        )
+    except requests.exceptions.Timeout:
+        raise AIRequestError("timeout")
+    except requests.exceptions.RequestException:
+        raise AIRequestError("network_error")
+    status_code = getattr(res, "status_code", None)
+    if not isinstance(status_code, int) or status_code >= 400:
+        raise AIRequestError("http_error", status_code)
+    try:
+        envelope = res.json()
+    except ValueError:
+        raise AIRequestError("invalid_json", status_code)
+    if not isinstance(envelope, dict):
+        raise AIRequestError("schema_error", status_code)
+    answered = envelope.get("model")
+    log_event("ai_response_metadata", **_response_diagnostics(
+        {**envelope, "model": f"google/{answered}" if isinstance(answered, str) else None},
+        f"google/{model_name}",
+        max_tokens,
+    ))
+    try:
+        return _content_response(envelope, status_code)
+    except _FailureSignal as failure:
+        raise AIRequestError(failure.reason, failure.status_code)
+
+
 def _log_rate_limit_transition(transition, request_budget=None):
     if isinstance(transition, dict):
         changed = transition.get("changed")
@@ -154,31 +245,7 @@ def safe_generate_content(
     }
     
     # 속보 분석용 프롬프트는 묶음 처리 요청이므로 JSON 반환을 강제함
-    enforced_prompt = prompt_text + "\n\n(IMPORTANT: 응답은 반드시 마크다운 백틱(```json) 없이 순수한 JSON 리스트([...]) 텍스트로만 반환하세요. 어떠한 설명, 사고 과정(Thought), 도입부 문구도 절대 포함하지 마세요. 바로 [ 로 시작해서 ] 로 끝나야 합니다.)"
-
-    # 응답에서 JSON만 추출하는 내부 함수
-    def extract_json_payload(text):
-        try:
-            # 1. 마크다운 백틱 제거 시도
-            match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
-            
-            # 2. 첫 번째 '[' 와 마지막 ']' 사이 추출 (배열)
-            start_idx = text.find('[')
-            end_idx = text.rfind(']')
-            if start_idx != -1 and end_idx != -1:
-                return text[start_idx:end_idx+1].strip()
-            
-            # 3. 첫 번째 '{' 와 마지막 '}' 사이 추출 (객체)
-            start_idx = text.find('{')
-            end_idx = text.rfind('}')
-            if start_idx != -1 and end_idx != -1:
-                return text[start_idx:end_idx+1].strip()
-                
-            return text.strip()
-        except:
-            return text.strip()
+    enforced_prompt = prompt_text + JSON_ONLY_SUFFIX
 
     last_failure = ("unexpected_error", None)
 
@@ -289,29 +356,8 @@ def safe_generate_content(
                 safe_code = error_code if isinstance(error_code, int) else None
                 raise _FailureSignal("http_error", safe_code)
 
-            choices = result_json.get("choices")
-            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                raise _FailureSignal("schema_error", status_code, "invalid_choices")
-            choice = choices[0]
-            finish_reason = choice.get("finish_reason")
-            if finish_reason == "length":
-                raise _FailureSignal("output_truncated", status_code)
-            message = choice.get("message")
-            if not isinstance(message, dict):
-                raise _FailureSignal("schema_error", status_code, "invalid_message")
-            _content = message.get("content")
-            if _content is None:
-                raise _FailureSignal("empty_response", status_code)
-            if not isinstance(_content, str):
-                raise _FailureSignal("schema_error", status_code, "non_text_content")
+            return _content_response(result_json, status_code)
 
-            raw_content = _content.strip()
-            # 사고 과정이나 마크다운이 섞여있어도 JSON만 정교하게 추출
-            content_text = extract_json_payload(raw_content)
-            if not content_text:
-                raise _FailureSignal("empty_response", status_code)
-            return DummyResponse(content_text, finish_reason=finish_reason)
-            
         except OpenRouterRequestBlocked:
             _log_persisted_block(request_budget)
             raise

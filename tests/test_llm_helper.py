@@ -172,5 +172,55 @@ class LlmHelperTests(unittest.TestCase):
 
 
 
+class GeminiGenerateContentTests(unittest.TestCase):
+    FORMAT = {"type": "json_schema", "json_schema": {"name": "news_selection", "strict": True,
+                                                     "schema": {"type": "array"}}}
+
+    @patch("llm_helper.requests.post")
+    def test_sends_the_schema_to_ai_studio_and_returns_the_json_text(self, post):
+        from llm_helper import GEMINI_CHAT_URL, gemini_generate_content
+
+        post.return_value = Mock(status_code=200, json=Mock(return_value={
+            "model": "gemini-3.1-flash-lite",
+            "choices": [{"finish_reason": "stop", "message": {"content": "```json\n[]\n```"}}],
+        }))
+        result = gemini_generate_content("select news", model_name="gemini-3.1-flash-lite",
+                                         api_key="gemini-test-key", response_format=self.FORMAT,
+                                         request_timeout=60, max_tokens=8192)
+
+        self.assertEqual(result.text, "[]")
+        self.assertEqual(post.call_args.args[0], GEMINI_CHAT_URL)
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body["model"], "gemini-3.1-flash-lite")
+        self.assertEqual(body["response_format"], self.FORMAT)
+        self.assertEqual(body["max_tokens"], 8192)
+        self.assertNotIn("provider", body)
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer gemini-test-key")
+        self.assertNotIn("gemini-test-key", str(body))
+
+    @patch("llm_helper.requests.post")
+    def test_quota_errors_timeouts_and_truncation_raise_typed_failures(self, post):
+        from llm_helper import gemini_generate_content
+
+        cases = (
+            (Mock(status_code=429), ("http_error", 429)),
+            (requests.exceptions.Timeout(), ("timeout", None)),
+            (Mock(status_code=200, json=Mock(return_value={
+                "choices": [{"finish_reason": "length", "message": {"content": "[{"}}]})),
+             ("output_truncated", 200)),
+        )
+        for outcome, expected in cases:
+            with self.subTest(expected=expected):
+                post.reset_mock(side_effect=True, return_value=True)
+                if isinstance(outcome, Exception):
+                    post.side_effect = outcome
+                else:
+                    post.return_value = outcome
+                with self.assertRaises(AIRequestError) as raised:
+                    gemini_generate_content("select news", model_name="gemini-3.1-flash-lite",
+                                            api_key="gemini-test-key")
+                self.assertEqual((raised.exception.reason, raised.exception.status_code), expected)
+
+
 if __name__ == "__main__":
     unittest.main()

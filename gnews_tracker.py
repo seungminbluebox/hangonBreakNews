@@ -41,6 +41,8 @@ select_headlines = partial(select_and_summarize, headline_only=True)
 
 DEFAULT_GNEWS_AI_MODEL = "openrouter/free"
 DEFAULT_GNEWS_AI_BACKUP_MODEL = "openrouter/free"
+# Google AI Studio free tier: each model has its own daily quota (500 requests as of 2026-11).
+DEFAULT_GNEWS_GEMINI_MODELS = "gemini-3.1-flash-lite,gemini-3.5-flash-lite"
 DEFAULT_CYCLE_SECONDS = 300
 DEFAULT_DAILY_REQUEST_LIMIT = 950
 DEFAULT_GNEWS_MAX_TOKENS = 8192
@@ -798,10 +800,23 @@ def run_production(
 class GNewsStageGenerator:
     supports_stage_options = True
 
-    def __init__(self, *, model_name, backup_model_name, selection_max_tokens, summary_max_tokens):
-        from llm_helper import safe_generate_content
+    def __init__(
+        self,
+        *,
+        model_name,
+        backup_model_name,
+        selection_max_tokens,
+        summary_max_tokens,
+        gemini_api_key=None,
+        gemini_models=(),
+    ):
+        from llm_helper import gemini_generate_content, safe_generate_content
 
         self._safe_generate_content = safe_generate_content
+        self._gemini_generate_content = gemini_generate_content
+        # Free Google AI Studio models go first; the OpenRouter free router is the last resort.
+        self.gemini_models = tuple(gemini_models) if gemini_api_key else ()
+        self._gemini_api_key = gemini_api_key
         self.model_name = model_name
         self.backup_model_name = backup_model_name
         self.selection_max_tokens = selection_max_tokens
@@ -820,26 +835,45 @@ class GNewsStageGenerator:
         }
 
     def __call__(self, prompt, *, stage="selection"):
+        from llm_helper import AIRequestError
+
+        response_format = (
+            SELECTION_RESPONSE_FORMAT if stage == "selection" else HEADLINE_RESPONSE_FORMAT
+        )
+        max_tokens = (
+            self.selection_max_tokens if stage == "selection" else self.summary_max_tokens
+        )
+        for gemini_model in self.gemini_models:
+            try:
+                return self._gemini_generate_content(
+                    prompt,
+                    model_name=gemini_model,
+                    api_key=self._gemini_api_key,
+                    response_format=response_format,
+                    request_timeout=60,
+                    max_tokens=max_tokens,
+                )
+            except AIRequestError as error:
+                log_event(
+                    "ai_route_failed",
+                    level=30,
+                    stage=stage,
+                    model=gemini_model,
+                    reason=error.reason,
+                    status_code=error.status_code,
+                )
         return self._safe_generate_content(
             prompt,
             max_retries=1,
             model_name=self.model_name,
             backup_model_name=self.backup_model_name,
-            response_format=(
-                SELECTION_RESPONSE_FORMAT
-                if stage == "selection"
-                else HEADLINE_RESPONSE_FORMAT
-            ),
+            response_format=response_format,
             provider_preferences={
                 "require_parameters": True,
                 "allow_fallbacks": True,
             },
             request_timeout=60,
-            max_tokens=(
-                self.selection_max_tokens
-                if stage == "selection"
-                else self.summary_max_tokens
-            ),
+            max_tokens=max_tokens,
             raise_on_failure=True,
         )
 
@@ -862,11 +896,21 @@ def _build_generator(environment):
 
     selection_max_tokens = positive_int("GNEWS_SELECTION_MAX_TOKENS")
     summary_max_tokens = positive_int("GNEWS_SUMMARY_MAX_TOKENS")
+    gemini_api_key = (environment.get("GNEWS_GEMINI_API_KEY") or "").strip() or None
+    gemini_models = tuple(
+        name.strip()
+        for name in environment.get("GNEWS_GEMINI_MODELS", DEFAULT_GNEWS_GEMINI_MODELS).split(",")
+        if name.strip()
+    )
+    if gemini_api_key is None:
+        log_event("ai_route_config", level=30, gemini="disabled", reason="missing_key")
     return GNewsStageGenerator(
         model_name=model_name,
         backup_model_name=backup_model_name,
         selection_max_tokens=selection_max_tokens,
         summary_max_tokens=summary_max_tokens,
+        gemini_api_key=gemini_api_key,
+        gemini_models=gemini_models,
     )
 
 

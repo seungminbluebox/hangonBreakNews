@@ -387,5 +387,44 @@ class GNewsProductionTests(unittest.TestCase):
         )
 
 
+class GNewsStageRouteTests(unittest.TestCase):
+    ENV = {"GNEWS_GEMINI_API_KEY": "gemini-test-key"}
+
+    def test_free_gemini_models_answer_before_the_openrouter_router(self):
+        with patch("llm_helper.gemini_generate_content", return_value=SimpleNamespace(text="[]")) as gemini,                 patch("llm_helper.safe_generate_content") as openrouter:
+            result = _build_generator(self.ENV)("selection", stage="selection")
+
+        self.assertEqual(result.text, "[]")
+        gemini.assert_called_once()
+        self.assertEqual(gemini.call_args.kwargs["model_name"], "gemini-3.1-flash-lite")
+        self.assertEqual(gemini.call_args.kwargs["api_key"], "gemini-test-key")
+        self.assertEqual(
+            gemini.call_args.kwargs["response_format"]["json_schema"]["name"],
+            "news_selection_shortlist",
+        )
+        openrouter.assert_not_called()
+
+    def test_each_failed_gemini_model_hands_over_to_the_next_then_openrouter_free(self):
+        from llm_helper import AIRequestError
+
+        with patch("llm_helper.gemini_generate_content", side_effect=AIRequestError("http_error", 429)) as gemini,                 patch("llm_helper.safe_generate_content", return_value=SimpleNamespace(text="[]")) as openrouter:
+            result = _build_generator(self.ENV)("headline", stage="headline")
+
+        self.assertEqual(result.text, "[]")
+        self.assertEqual(
+            [call.kwargs["model_name"] for call in gemini.call_args_list],
+            ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"],
+        )
+        openrouter.assert_called_once()
+        self.assertEqual(openrouter.call_args.kwargs["model_name"], "openrouter/free")
+
+    def test_without_a_gemini_key_only_the_openrouter_router_is_called(self):
+        with patch("llm_helper.gemini_generate_content") as gemini,                 patch("llm_helper.safe_generate_content", return_value=SimpleNamespace(text="[]")) as openrouter:
+            _build_generator({})("selection", stage="selection")
+
+        gemini.assert_not_called()
+        openrouter.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
