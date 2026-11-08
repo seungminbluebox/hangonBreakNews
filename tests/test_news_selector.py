@@ -5056,5 +5056,15 @@ class NewsSelectorTests(unittest.TestCase):
                 _, reason = self._item_reason(title, "회사가 새 공장 투자를 확정했습니다.")
                 self.assertNotIn(reason, ("foreign_script_fragment", "outlet_name_title"))
 
+    def test_a_lone_hanja_abbreviation_passes_but_ideograph_words_do_not(self):
+        for title in ("日은행, 2% 물가 목표 달성 확인", "中 전기차 수출 경쟁력, 한국 첫 추월"):
+            with self.subTest(title=title):
+                _, reason = self._item_reason(title, "회사가 새 공장 투자를 확정했습니다.")
+                self.assertNotEqual(reason, "foreign_script_fragment")
+        item, reason = self._item_reason("東京 증시 급락", "회사가 새 공장 투자를 확정했습니다.")
+        self.assertIsNone(item)
+        self.assertEqual(reason, "foreign_script_fragment")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1587,7 +1587,8 @@ def _has_known_mistransliteration(title: str, content: str) -> bool:
 
 def _has_foreign_script_fragment(title: str, content: str) -> bool:
     text = f"{title} {content}"
-    return bool(re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\u0400-\u04ff\u0900-\u097f]", text))
+    # A lone hanja such as \u65e5\u00b7\u4e2d\u00b7\u7f8e is a standard Korean headline abbreviation; two or more in a row are not.
+    return bool(re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]{2,}|[\u3040-\u30ff\u0400-\u04ff\u0900-\u097f]", text))
 
 
 def _is_outlet_name_title(article: dict, title: str) -> bool:
