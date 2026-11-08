@@ -890,7 +890,7 @@ class ExistingContractTests(unittest.TestCase):
                     [call("/live"), call("/")],
                 )
                 push.assert_called_once_with(
-                    title="🚨[긴급 속보] 미국 경제지표 발표",
+                    title="📌[핵심 소식] 미국 경제지표 발표",
                     body="",
                     url="/live",
                     categories=("breaking_news", "important_breaking_news"),
