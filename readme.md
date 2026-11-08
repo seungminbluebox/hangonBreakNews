@@ -25,30 +25,16 @@ deactivate
 
 ## 2. 코드 및 라이브러리 업데이트
 
-로컬에서 수정한 코드를 서버에 반영하고, 새로운 라이브러리를 설치하는 과정입니다-
+서버 폴더(`~/hangon_breaknews`)에서 두 줄이면 됩니다. 서버에서는 파일을 직접 고치거나 복사하지 않습니다. 그래야 `git pull`이 막히지 않습니다.
 
 ```bash
-# 1. 최신 코드 가져오기 (GitHub)
 git pull origin main
-
-# 2. 새로운 라이브러리 설치 (필요 시)
-# 환율 트래커를 위해 finance-datareader, pandas가 포함되어야 합니다.
-pip install -r requirements.txt
-
-# 3. DB에 쓰지 않는 1회 점검
-python gnews_tracker.py --dry-run
-
-# 4. 기존 RSS 트래커를 중지하고 GNews 트래커로 교체
-pm2 stop breaking-news
-pm2 delete breaking-news
-pm2 start gnews_tracker.py --name breaking-news --interpreter ./venv/bin/python
-pm2 save
-
-# 다른 트래커 재시작
-pm2 restart exchange-monitor
-pm2 restart kospi-night
-
+pm2 restart breaking-news
 ```
+
+- `requirements.txt`가 바뀐 업데이트만 그 사이에 `./venv/bin/pip install -r requirements.txt`를 한 번 실행합니다.
+- 환율·야간 트래커 파일이 바뀌었다면 `pm2 restart exchange-monitor kospi-night`도 실행합니다.
+- 키와 설정은 `.env`에만 둡니다. `.env`·`venv/`·예산 DB는 git이 추적하지 않아 pull로 바뀌지 않습니다.
 
 ---
 

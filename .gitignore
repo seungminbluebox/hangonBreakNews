@@ -6,3 +6,5 @@ __pycache__/
 .openrouter-budget.sqlite3
 .openrouter-budget.sqlite3-wal
 .openrouter-budget.sqlite3-shm
+.venv/
+venv/
