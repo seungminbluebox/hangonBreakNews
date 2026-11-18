@@ -852,7 +852,7 @@ class ExistingContractTests(unittest.TestCase):
         publish_breaking_news(item, revalidate=Mock(), push=push)
 
         self.assertNotIn(item["raw_content"], repr(push.call_args))
-        self.assertEqual(push.call_args.kwargs["body"], "")
+        self.assertEqual(push.call_args.kwargs["body"], "Example News 보도예요.")
 
     def test_regular_news_targets_realtime_news_subscribers(self):
         for score in (7, 8):
@@ -866,8 +866,8 @@ class ExistingContractTests(unittest.TestCase):
                 )
 
                 push.assert_called_once_with(
-                    title="[주요 경제 소식] 미국 경제지표 발표",
-                    body="",
+                    title="🌐 미국 경제지표 발표",
+                    body="Example News 보도예요.",
                     url="/live",
                     categories=("breaking_news",),
                 )
@@ -890,8 +890,8 @@ class ExistingContractTests(unittest.TestCase):
                     [call("/live"), call("/")],
                 )
                 push.assert_called_once_with(
-                    title="📌[핵심 소식] 미국 경제지표 발표",
-                    body="",
+                    title="📌 미국 경제지표 발표",
+                    body="핵심 소식이에요. Example News 보도예요.",
                     url="/live",
                     categories=("breaking_news", "important_breaking_news"),
                 )

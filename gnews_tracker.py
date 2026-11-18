@@ -179,18 +179,21 @@ class SupabaseBreakingNewsRepository:
 def publish_breaking_news(news_item: dict, *, revalidate, push) -> None:
     """Preserve the existing page refresh and notification contract."""
     score = normalize_importance(news_item["importance_score"])
+    # Headline-only contract: the body names the outlet, never source text.
+    source = str(news_item.get("source_name") or "").strip()
+    outlet = f"{source} 보도예요." if source else "실시간 속보에서 이어서 볼 수 있어요."
     if score >= 9:
-        prefix = "📌[핵심 소식]"
+        title, body = f"📌 {news_item['normalized_title']}", f"핵심 소식이에요. {outlet}"
         target_categories = ("breaking_news", "important_breaking_news")
     else:
-        prefix = "[주요 경제 소식]"
+        title, body = f"🌐 {news_item['normalized_title']}", outlet
         target_categories = ("breaking_news",)
 
     revalidate("/live")
     revalidate("/")
     push(
-        title=f"{prefix} {news_item['normalized_title']}",
-        body="",
+        title=title,
+        body=body,
         url="/live",
         categories=target_categories,
     )
